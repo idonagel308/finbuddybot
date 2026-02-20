@@ -21,17 +21,18 @@ else:
 
 # List of models to try in order of preference/stability
 MODELS_TO_TRY = [
-    "gemini-2.5-flash",       # Primary - confirmed working
+    "gemini-2.0-flash",       # Primary - current latest
+    "gemini-1.5-flash",       # Fallback - stable
     "gemini-2.0-flash-lite",  # Fallback
 ]
 
 # Cache GenerativeModel instances to avoid recreating on every call
 _model_cache = {}
 
-# Allowed categories for validation
+# Allowed categories for validation (clean strings — no emojis in the data layer)
 ALLOWED_CATEGORIES = {
-    '🏠 Housing', '🍔 Food', '🚗 Transport', '🎉 Entertainment',
-    '🛍️ Shopping', '❤️ Health', '📚 Education', '💸 Financial', '❓ Other'
+    'Housing', 'Food', 'Transport', 'Entertainment',
+    'Shopping', 'Health', 'Education', 'Financial', 'Other'
 }
 
 # Input limits
@@ -77,9 +78,8 @@ def _validate_parsed_expense(data: dict) -> dict:
     if not isinstance(amount, (int, float)) or amount <= 0 or amount > MAX_AMOUNT:
         return None
 
-    # Validate category - must be from allowed set
+    # Validate category — must be from allowed set
     if category not in ALLOWED_CATEGORIES:
-        # Try to find the closest match
         category = _fuzzy_match_category(category)
 
     # Sanitize description
@@ -98,35 +98,54 @@ def _validate_parsed_expense(data: dict) -> dict:
 def _fuzzy_match_category(raw_category: str) -> str:
     """Attempts to match a raw category string to an allowed category."""
     if not raw_category:
-        return '❓ Other'
+        return 'Other'
     raw_lower = raw_category.lower()
     for allowed in ALLOWED_CATEGORIES:
-        # Check if the text part (after emoji) matches
-        text_part = allowed.split(' ', 1)[1].lower() if ' ' in allowed else allowed.lower()
-        if text_part in raw_lower or raw_lower in text_part:
+        if allowed.lower() in raw_lower or raw_lower in allowed.lower():
             return allowed
-    return '❓ Other'
+    return 'Other'
 
 
-def generate_insights(summary_text):
+def generate_insights(totals, age=None, wage=None, budget=None, recent_expenses=None):
     """
-    Generates financial advice based on the provided summary text.
+    Generates tailored financial advice based on structured spending data.
     """
     if not api_key:
         return "⚠️ API Key missing. Cannot generate insights."
 
-    # Sanitize the summary text too
-    safe_summary = _sanitize_user_input(summary_text)
+    # Format context for segments
+    totals_str = "\n".join([f"- {cat}: {amount:.2f}" for cat, amount in totals.items()])
+    
+    profile_context = ""
+    if age and wage:
+        profile_context = f"- User Profile: {age} years old, earning {wage:.0f} NIS/month\n"
+    
+    budget_context = ""
+    if budget:
+        total_spent = sum(totals.values())
+        budget_context = f"- Monthly Budget: {budget:.0f} (Currently at {total_spent/budget*100:.0f}%)\n"
 
-
+    recent_str = ""
+    if recent_expenses:
+        recent_str = "\nRecent Transactions:\n" + "\n".join([
+            f"- {e[1][5:10]}: {e[2]} on {e[3]} ({e[4]})" for e in recent_expenses[:5]
+        ])
 
     prompt = f"""
-    You are a financial advisor. Here is a summary of the user's spending this month:
-    {safe_summary}
+    You are an elite personal financial coach. Analyze this user's data and provide 3 HIGHLY SPECIFIC, actionable tips.
     
-    Provide 3 short, actionable bullet points of advice or observation. 
-    Keep it under 50 words total. Be encouraging but realistic.
-    Do NOT use any special formatting or markdown. Plain text only.
+    DATA POINTS:
+    {profile_context}{budget_context}
+    Breakdown by Category:
+    {totals_str}
+    {recent_str}
+    
+    GUIDELINES:
+    1. Be concise (max 60 words total).
+    2. Identify the biggest spending category or an unusual trend.
+    3. If over budget, give a specific saving strategy.
+    4. If under budget, encourage them.
+    5. Plain text only, NO markdown, NO emojis (I will add them).
     """
 
     for model_name in MODELS_TO_TRY:
@@ -166,15 +185,15 @@ def parse_expense(text):
         Return ONLY a raw JSON object (no markdown, no backticks) with these keys:
         - amount (number, required)
         - category (string, MUST be one of the following exact strings):
-            - '🏠 Housing' (Rent, Utilities, Internet, Maintenance)
-            - '🍔 Food' (Groceries, Restaurants, Snacks, Coffee)
-            - '🚗 Transport' (Fuel, Taxi, Public Transport, Car)
-            - '🎉 Entertainment' (Movies, Games, Hobbies, Vacations, Eating Out if leisure)
-            - '🛍️ Shopping' (Clothing, Electronics, Furniture, Gadgets)
-            - '❤️ Health' (Doctor, Gym, Pharmacy, Personal Care)
-            - '📚 Education' (Books, Courses, Tuition)
-            - '💸 Financial' (Investments, Savings, Debt, Taxes, Fees)
-            - '❓ Other' (Anything else)
+            - 'Housing' (Rent, Utilities, Internet, Maintenance)
+            - 'Food' (Groceries, Restaurants, Snacks, Coffee)
+            - 'Transport' (Fuel, Taxi, Public Transport, Car)
+            - 'Entertainment' (Movies, Games, Hobbies, Vacations, Eating Out if leisure)
+            - 'Shopping' (Clothing, Electronics, Furniture, Gadgets)
+            - 'Health' (Doctor, Gym, Pharmacy, Personal Care)
+            - 'Education' (Books, Courses, Tuition)
+            - 'Financial' (Investments, Savings, Debt, Taxes, Fees)
+            - 'Other' (Anything else)
         - description (string, the item bought or context)
         
         If the text is not an expense, return null.
@@ -187,24 +206,25 @@ def parse_expense(text):
                 response = _model_cache[model_name].generate_content(prompt)
 
                 content = response.text.strip()
-                # Clean up markdown if present
-                if content.startswith("```json"):
-                    content = content[7:]
-                if content.startswith("```"):
-                    content = content[3:]
-                if content.endswith("```"):
-                    content = content[:-3]
-                content = content.strip()
-
-                data = json.loads(content)
+                
+                # Robust JSON extraction: search for the first { and last }
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    content = json_match.group(0)
+                
+                try:
+                    data = json.loads(content)
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to decode JSON from {model_name}: {content[:100]}")
+                    continue
 
                 # Validate the parsed data before returning
                 validated = _validate_parsed_expense(data)
                 if validated:
                     return validated
                 else:
-                    logger.warning(f"LLM returned invalid expense data: skipping")
-                    break  # Try regex fallback
+                    logger.warning(f"LLM returned invalid expense data: trying next model")
+                    continue  # Try next model before fallback to regex if validation failed (hallucination)
 
             except Exception as e:
                 error_str = str(e)
@@ -216,65 +236,57 @@ def parse_expense(text):
     logger.info("LLM unavailable. Falling back to Regex.")
 
     # --- Regex Fallback ---
+    # Enhanced for Hebrew and international characters
     text_lower = safe_text.lower()
 
-    # Pattern 1: Amount then Category (e.g., "50 on food", "spent 20 for taxi")
-    match1 = re.search(r'(\d+(?:\.\d+)?)\s*(?:shekels|nis|dollars|euros|k|m)?\s*(?:on|for)?\s*([a-z\s]+)', text_lower)
-    if match1:
-        amount = float(match1.group(1))
-        if amount <= 0 or amount > MAX_AMOUNT:
-            return None
-        raw_category = match1.group(2).strip()
-        category = raw_category.replace('on ', '').replace('for ', '').strip()
+    # Pattern 1: Any number followed by text (e.g. "50 pizza", "30 שקל")
+    # Supports Hebrew via \u0590-\u05FF range
+    match = re.search(r'(\d+(?:\.\d+)?)\s*([a-zA-Z\u0590-\u05FF\s]+)', text_lower)
+    if match:
+        amount = float(match.group(1))
+        if 0 < amount <= MAX_AMOUNT:
+            raw_text = match.group(2).strip()
+            # Clean up common noise words
+            clean_category = re.sub(r'^(on|for|spent|ב-|שקל|שקלים|nis|shekels)\s*', '', raw_text, flags=re.IGNORECASE)
+            return {
+                "amount": amount,
+                "category": _map_category(clean_category),
+                "description": f"Extracted from: {safe_text}"
+            }
 
-        if category.startswith("spent"):
-            return None
-
-        return {
-            "amount": amount,
-            "category": _map_category(category),
-            "description": "Via Regex Fallback"
-        }
-
-    # Pattern 2: Category then Amount (e.g., "taxi 20", "food 50")
-    match2 = re.search(r'([a-z\s]+)\s*(\d+(?:\.\d+)?)', text_lower)
+    # Pattern 2: Text followed by number (e.g. "pizza 50")
+    match2 = re.search(r'([a-zA-Z\u0590-\u05FF\s]+)\s*(\d+(?:\.\d+)?)', text_lower)
     if match2:
-        category = match2.group(1).strip()
+        raw_text = match2.group(1).strip()
         amount = float(match2.group(2))
-
-        if amount <= 0 or amount > MAX_AMOUNT:
-            return None
-
-        if "spent" in category:
-            category = category.replace("spent", "").strip()
-
-        return {
-            "amount": amount,
-            "category": _map_category(category),
-            "description": "Via Regex Fallback"
-        }
+        if 0 < amount <= MAX_AMOUNT:
+            return {
+                "amount": amount,
+                "category": _map_category(raw_text),
+                "description": f"Extracted from: {safe_text}"
+            }
 
     return None
 
 
 def _map_category(text):
-    """Maps a raw text category to the standardized emoji category."""
+    """Maps a raw text keyword to a clean category string."""
     text = text.lower()
 
     mapping = {
-        'food': '🍔 Food', 'pizza': '🍔 Food', 'burger': '🍔 Food', 'sushi': '🍔 Food', 'restaurant': '🍔 Food', 'coffee': '🍔 Food', 'groceries': '🍔 Food', 'snack': '🍔 Food',
-        'taxi': '🚗 Transport', 'bus': '🚗 Transport', 'train': '🚗 Transport', 'fuel': '🚗 Transport', 'gas': '🚗 Transport', 'flight': '🚗 Transport', 'uber': '🚗 Transport',
-        'rent': '🏠 Housing', 'electricity': '🏠 Housing', 'water': '🏠 Housing', 'bill': '🏠 Housing', 'internet': '🏠 Housing',
-        'movie': '🎉 Entertainment', 'game': '🎉 Entertainment', 'cinema': '🎉 Entertainment', 'bar': '🎉 Entertainment',
-        'clothes': '🛍️ Shopping', 'shoes': '🛍️ Shopping', 'shirt': '🛍️ Shopping', 'shopping': '🛍️ Shopping',
-        'gym': '❤️ Health', 'doctor': '❤️ Health', 'pharmacy': '❤️ Health', 'meds': '❤️ Health'
+        'food': 'Food', 'pizza': 'Food', 'burger': 'Food', 'sushi': 'Food', 'restaurant': 'Food', 'coffee': 'Food', 'groceries': 'Food', 'snack': 'Food',
+        'taxi': 'Transport', 'bus': 'Transport', 'train': 'Transport', 'fuel': 'Transport', 'gas': 'Transport', 'flight': 'Transport', 'uber': 'Transport',
+        'rent': 'Housing', 'electricity': 'Housing', 'water': 'Housing', 'bill': 'Housing', 'internet': 'Housing',
+        'movie': 'Entertainment', 'game': 'Entertainment', 'cinema': 'Entertainment', 'bar': 'Entertainment',
+        'clothes': 'Shopping', 'shoes': 'Shopping', 'shirt': 'Shopping', 'shopping': 'Shopping',
+        'gym': 'Health', 'doctor': 'Health', 'pharmacy': 'Health', 'meds': 'Health',
     }
 
     for key, value in mapping.items():
         if key in text:
             return value
 
-    return '❓ Other'
+    return 'Other'
 
 
 if __name__ == "__main__":
@@ -286,6 +298,6 @@ if __name__ == "__main__":
 
     # Test the insights function
     print("\nTesting insights generation...")
-    test_summary = "Food: 150, Transport: 50, Entertainment: 200"
-    insight = generate_insights(test_summary)
+    test_totals = {"Food": 150.0, "Transport": 50.0, "Entertainment": 200.0}
+    insight = generate_insights(test_totals, budget=500.0)
     print("Insight Result:", insight)

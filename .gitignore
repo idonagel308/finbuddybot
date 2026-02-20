@@ -27,3 +27,8 @@ list_models.py
 # OS
 Thumbs.db
 .DS_Store
+
+.env
+venv/
+__pycache__/
+finance.db

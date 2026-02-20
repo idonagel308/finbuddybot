@@ -28,6 +28,24 @@ _user_message_timestamps = defaultdict(list)
 # Whitelist of valid callback data values
 VALID_CALLBACKS = {'last_expenses', 'monthly_list', 'pie_chart', 'insights'}
 
+# ── Emoji Display Mapping ──
+# The data layer stores clean strings ('Food', 'Transport').
+# This mapping adds emojis for the Telegram UI only.
+CATEGORY_EMOJI = {
+    'Housing': '🏠', 'Food': '🍔', 'Transport': '🚗',
+    'Entertainment': '🎉', 'Shopping': '🛍️', 'Health': '❤️',
+    'Education': '📚', 'Financial': '💸', 'Other': '❓',
+}
+
+
+def _display_category(category: str) -> str:
+    """Convert a clean category string to an emoji-decorated display string."""
+    # If it already has an emoji (legacy data), pass through as-is
+    if any(ord(c) > 0xFFFF for c in category):
+        return category
+    emoji = CATEGORY_EMOJI.get(category, '❓')
+    return f"{emoji} {category}"
+
 
 def _is_rate_limited(user_id: int) -> bool:
     """Check if a user has exceeded the rate limit."""
@@ -103,6 +121,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 /budget `amount` — Set monthly budget\n"
         "↩️ /undo — Remove last expense\n"
         "📤 /export — Download CSV file\n"
+        "🗑️ /deleteall — Clear all your data\n"
         "❓ /help — This message"
     )
     await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
@@ -149,7 +168,9 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = float(context.args[0])
             db.set_budget(user_id, amount)
             await context.bot.send_message(chat_id=chat_id, text=f"💰 *Monthly budget set to {amount:.0f}!*", parse_mode='Markdown')
-        except (ValueError, IndexError):
+        except ValueError as e:
+            await context.bot.send_message(chat_id=chat_id, text=f"⚠️ {str(e)}")
+        except (IndexError):
             await context.bot.send_message(chat_id=chat_id, text="⚠️ Usage: /budget `5000`", parse_mode='Markdown')
     else:
         budget = db.get_budget(user_id)
@@ -182,6 +203,49 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_document(chat_id=chat_id, document=file, caption="📤 *Your expenses export*", parse_mode='Markdown')
 
 
+@_private_only
+async def deleteall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Asks for confirmation before deleting all expenses."""
+    keyboard = [
+        [InlineKeyboardButton("🗑️ Yes, delete everything", callback_data='confirm_delete_all')],
+        [InlineKeyboardButton("❌ Cancel", callback_data='cancel_delete_all')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="⚠️ *Are you sure you want to delete ALL your expenses?*\n\nThis action *cannot be undone!*",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+
+@_private_only
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sets or shows the user's age and wage."""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+
+    if context.args and len(context.args) == 2:
+        try:
+            age = int(context.args[0])
+            wage = float(context.args[1])
+            db.set_profile(user_id, age, wage)
+            await context.bot.send_message(chat_id=chat_id, text=f"👤 *Profile Updated!*\nAge: {age}\nWage: {wage:.0f} NIS", parse_mode='Markdown')
+        except ValueError:
+            await context.bot.send_message(chat_id=chat_id, text="⚠️ Usage: /profile `<age> <wage>`\nExample: `/profile 25 12000`", parse_mode='Markdown')
+    else:
+        profile = db.get_profile(user_id)
+        if profile:
+            await context.bot.send_message(
+                chat_id=chat_id, 
+                text=f"👤 *Your Profile:*\nAge: {profile['age']}\nWage: {profile['wage']:.0f} NIS\n\nTo update: `/profile <age> <wage>`",
+                parse_mode='Markdown'
+            )
+        else:
+            await context.bot.send_message(chat_id=chat_id, text="👤 No profile set.\nUse `/profile <age> <wage>` to get better AI insights.", parse_mode='Markdown')
+
+
+
 # ── Callback Handler ──
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,7 +256,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = query.from_user.id
     data = query.data
 
-    # Handle delete callbacks (format: "del_123")
+    # Handle "delete all" confirmation
+    if data == 'confirm_delete_all':
+        count = db.delete_all_expenses(telegram_id)
+        await query.edit_message_text(text=f"🗑️ *Done!* Deleted {count} expense(s).\n\nYou're starting fresh.", parse_mode='Markdown')
+        return
+    if data == 'cancel_delete_all':
+        await query.edit_message_text(text="✅ Cancelled. Your expenses are safe.")
+        return
+
+    # Handle single delete callbacks (format: "del_123")
     if data.startswith("del_"):
         try:
             expense_id = int(data[4:])
@@ -222,8 +295,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for exp in expenses:
                     date_short = exp[1][5:10]
                     safe_desc = _escape_markdown(exp[4] or '')
-                    text += f"🗓️ `{date_short}` | 💰 *{exp[2]}* | {exp[3]}\n_{safe_desc}_\n\n"
-                    buttons.append([InlineKeyboardButton(f"🗑️ Delete {exp[2]} {exp[3]}", callback_data=f"del_{exp[0]}")])
+                    text += f"🗓️ `{date_short}` | 💰 *{exp[2]}* | {_display_category(exp[3])}\n_{safe_desc}_\n\n"
+                    buttons.append([InlineKeyboardButton(f"🗑️ Delete {exp[2]} {_display_category(exp[3])}", callback_data=f"del_{exp[0]}")])
                 reply_markup = InlineKeyboardMarkup(buttons)
                 await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
 
@@ -236,7 +309,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text = f"📅 *This Month's Activity*\n🏆 *Total: {total:.2f}*\n\n"
                 for exp in expenses:
                     date_short = exp[1][5:10]
-                    text += f"• `{date_short}`: *{exp[2]}* - {exp[3]}\n"
+                    text += f"• `{date_short}`: *{exp[2]}* - {_display_category(exp[3])}\n"
             await query.edit_message_text(text=text, parse_mode='Markdown')
 
         elif data == 'pie_chart':
@@ -256,20 +329,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 percent = (amount / total_sum) * 100
                 bar_len = int(percent / 10) + 1
                 bar = "🟦" * bar_len
-                text += f"{cat}: *{amount:.1f}* ({percent:.0f}%)\n{bar}\n"
+                text += f"{_display_category(cat)}: *{amount:.1f}* ({percent:.0f}%)\n{bar}\n"
             await query.edit_message_text(text=text, parse_mode='Markdown')
 
         elif data == 'insights':
             await query.edit_message_text(text="🤔 *Analyzing your spending...*\n_(This might take a few seconds)_", parse_mode='Markdown')
+            
+            # Gather all context for smarter insights
             totals = db.get_category_totals(user_id=telegram_id)
-            if not totals:
-                await query.edit_message_text(text="❌ Not enough data for insights yet.")
+            if not totals or sum(totals.values()) <= 0:
+                await query.edit_message_text(text="❌ Not enough data for insights yet. Try adding some expenses first!")
                 return
 
-            summary_str = ", ".join([f"{k}: {v}" for k, v in totals.items()])
-            insight = llm_helper.generate_insights(summary_str)
+            budget = db.get_budget(telegram_id)
+            recent = db.get_recent_expenses(user_id=telegram_id, limit=10)
+            profile = db.get_profile(telegram_id)
+            
+            # Call enhanced insights
+            insight = llm_helper.generate_insights(
+                totals=totals,
+                age=profile['age'] if profile else None,
+                wage=profile['wage'] if profile else None,
+                budget=budget,
+                recent_expenses=recent
+            )
+
+            # Format for better readability
             safe_insight = _escape_markdown(insight)
-            await query.edit_message_text(text=f"💡 *FinTechBot Insight:*\n\n{safe_insight}", parse_mode='Markdown')
+            await query.edit_message_text(text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Error in button_handler for user {telegram_id}: {type(e).__name__}")
@@ -321,7 +408,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response_text = (
                     f"✅ *Expense Saved!*\n\n"
                     f"💰 Amount: *{amount}*\n"
-                    f"📂 Category: {category}\n"
+                    f"📂 Category: {_display_category(category)}\n"
                     f"📝 Details: _{safe_desc}_\n\n"
                     f"Use /menu to see your dashboard."
                 )
@@ -340,7 +427,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response_text = "❓ I didn't understand that as an expense.\nTry: *\"Spent 50 on food\"*"
 
     except ValueError as e:
-        logger.warning(f"Validation error for user {user_id}: {type(e).__name__}")
+        logger.warning(f"Validation error for user {user_id}: {e}")
         response_text = "⚠️ Invalid expense data. Please check the amount and try again."
     except Exception as e:
         logger.error(f"Unexpected error for user {user_id}: {type(e).__name__}")
@@ -375,6 +462,8 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('undo', undo_command))
     application.add_handler(CommandHandler('budget', budget_command))
     application.add_handler(CommandHandler('export', export_command))
+    application.add_handler(CommandHandler('deleteall', deleteall_command))
+    application.add_handler(CommandHandler('profile', profile_command))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.add_handler(CallbackQueryHandler(button_handler))
 

@@ -13,8 +13,8 @@ DB_NAME = "fintech.db"
 MAX_AMOUNT = 1_000_000  # Maximum single expense amount
 MAX_DESCRIPTION_LENGTH = 200
 ALLOWED_CATEGORIES = {
-    '🏠 Housing', '🍔 Food', '🚗 Transport', '🎉 Entertainment',
-    '🛍️ Shopping', '❤️ Health', '📚 Education', '💸 Financial', '❓ Other'
+    'Housing', 'Food', 'Transport', 'Entertainment',
+    'Shopping', 'Health', 'Education', 'Financial', 'Other'
 }
 
 
@@ -60,6 +60,15 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS budgets (
                     user_id INTEGER PRIMARY KEY,
                     amount REAL NOT NULL CHECK(amount > 0)
+                )
+            ''')
+
+            # Profiles table (age and monthly wage)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS profiles (
+                    user_id INTEGER PRIMARY KEY,
+                    age INTEGER,
+                    wage REAL
                 )
             ''')
 
@@ -314,6 +323,51 @@ def get_budget(user_id: int) -> float | None:
         return None
 
 
+def set_profile(user_id: int, age: int, wage: float):
+    """Sets or updates the user profile."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT OR REPLACE INTO profiles (user_id, age, wage) VALUES (?, ?, ?)',
+                (user_id, age, wage)
+            )
+            conn.commit()
+    except sqlite3.Error as e:
+        logger.error(f"Error setting profile: {e}")
+        raise
+
+
+def get_profile(user_id: int) -> dict | None:
+    """Returns the user profile as a dict."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT age, wage FROM profiles WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row:
+                return {'age': row[0], 'wage': row[1]}
+            return None
+    except sqlite3.Error as e:
+        logger.error(f"Error fetching profile: {e}")
+        return None
+
+
+def delete_all_expenses(user_id: int) -> int:
+    """Deletes ALL expenses for a given user. Returns the number of deleted rows."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM expenses WHERE user_id = ?', (user_id,))
+            conn.commit()
+            count = cursor.rowcount
+            logger.info(f"Deleted {count} expenses for user {user_id}")
+            return count
+    except sqlite3.Error as e:
+        logger.error(f"Error deleting all expenses: {e}")
+        return 0
+
+
 if __name__ == "__main__":
     # verification block
     print("--- Starting Database Verification ---")
@@ -325,8 +379,8 @@ if __name__ == "__main__":
     # 2. Add a test expense
     test_user_id = 123456789
     print(f"Adding test expense for user {test_user_id}...")
-    add_expense(test_user_id, 50.0, "🍔 Food", "Pizza verification")
-    add_expense(test_user_id, 30.0, "🚗 Transport", "Taxi")
+    add_expense(test_user_id, 50.0, "Food", "Pizza verification")
+    add_expense(test_user_id, 30.0, "Transport", "Taxi")
 
     # 3. Retrieve and display expenses
     print(f"Fetching recent expenses for user {test_user_id}...")
