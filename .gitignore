@@ -1,0 +1,29 @@
+# Environment & Secrets
+.env
+keys.txt
+
+# Database
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Debug utilities (should not be in production)
+debug_db.py
+list_models.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store

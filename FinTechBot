@@ -1,0 +1,12 @@
+"Hi, I am ready to start building my Financial Telegram Bot MVP.
+Goal: A local Python bot that tracks expenses via natural language text.
+Tech Stack: Python 3.10+, python-telegram-bot (interface), python-dotenv (for API keys).
+
+Current Phase: Setup & Hello World.
+Please guide me step-by-step:
+
+Set up the virtual environment (venv) and create a requirements.txt.
+
+Create a .env file structure for my TELEGRAM_TOKEN.
+
+Write a simple bot.py script that connects to Telegram and just echoes back whatever I send it (to verify the connection is working). Do not add any AI or Database logic yet."
