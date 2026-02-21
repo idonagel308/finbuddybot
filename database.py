@@ -84,10 +84,20 @@ def _validate_expense(amount: float, category: str, description: str = ""):
         raise ValueError(f"Amount must be a positive number, got: {type(amount)}")
     if amount > MAX_AMOUNT:
         raise ValueError(f"Amount exceeds maximum allowed ({MAX_AMOUNT})")
+    # Guard against NaN/infinity
+    import math
+    if math.isnan(amount) or math.isinf(amount):
+        raise ValueError("Amount cannot be NaN or infinity")
     if category not in ALLOWED_CATEGORIES:
         raise ValueError(f"Invalid category: {category}")
     if description and len(description) > MAX_DESCRIPTION_LENGTH:
         raise ValueError(f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters")
+
+
+def _validate_user_id(user_id):
+    """Ensures user_id is a valid integer."""
+    if not isinstance(user_id, int) or user_id < 0:
+        raise ValueError(f"Invalid user_id: {user_id}")
 
 
 def add_expense(user_id: int, amount: float, category: str, description: str = ""):
@@ -104,6 +114,7 @@ def add_expense(user_id: int, amount: float, category: str, description: str = "
         ValueError: If input validation fails.
     """
     # Validate inputs
+    _validate_user_id(user_id)
     _validate_expense(amount, category, description)
 
     # Sanitize description
@@ -325,6 +336,11 @@ def get_budget(user_id: int) -> float | None:
 
 def set_profile(user_id: int, age: int, wage: float):
     """Sets or updates the user profile."""
+    _validate_user_id(user_id)
+    if not isinstance(age, int) or not (13 <= age <= 120):
+        raise ValueError(f"Age must be between 13 and 120, got: {age}")
+    if not isinstance(wage, (int, float)) or wage <= 0 or wage > MAX_AMOUNT:
+        raise ValueError(f"Wage must be between 1 and {MAX_AMOUNT}")
     try:
         with get_connection() as conn:
             cursor = conn.cursor()

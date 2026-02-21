@@ -2,6 +2,11 @@ import os
 import io
 import logging
 import time
+import traceback
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend (no GUI needed)
+import matplotlib.pyplot as plt
+from functools import wraps
 from collections import defaultdict
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,12 +22,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress httpx logs that leak the bot token in URLs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 import database as db
 import llm_helper
 
-# --- Rate Limiting ---
+# --- Constants ---
 MAX_MESSAGES_PER_MINUTE = 10
 MAX_MESSAGE_LENGTH = 500
+TELEGRAM_MAX_LENGTH = 4096  # Telegram's hard limit for a single message
 _user_message_timestamps = defaultdict(list)
 
 # Whitelist of valid callback data values
@@ -75,6 +84,91 @@ def _cleanup_rate_limit_data():
         del _user_message_timestamps[uid]
 
 
+# ── Pie Chart Generator ──
+
+# Category colors — vibrant, distinct, modern palette
+CATEGORY_COLORS = {
+    'Food':          '#FF6B6B',  # Coral red
+    'Transport':     '#4ECDC4',  # Teal
+    'Housing':       '#45B7D1',  # Sky blue
+    'Entertainment': '#F7DC6F',  # Gold
+    'Shopping':      '#BB8FCE',  # Lavender
+    'Health':        '#58D68D',  # Green
+    'Education':     '#5DADE2',  # Blue
+    'Financial':     '#F0B27A',  # Peach
+    'Other':         '#AEB6BF',  # Gray
+}
+
+
+def _generate_pie_chart(totals: dict, total_sum: float) -> io.BytesIO:
+    """
+    Generates a professional donut pie chart image and returns it as a BytesIO buffer.
+    """
+    # Sort by amount descending
+    sorted_items = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+    labels = []
+    sizes = []
+    colors = []
+
+    for cat, amount in sorted_items:
+        percent = (amount / total_sum) * 100
+        labels.append(f"{_display_category(cat)}\n₪{amount:,.0f} ({percent:.0f}%)")
+        sizes.append(amount)
+        colors.append(CATEGORY_COLORS.get(cat, '#AEB6BF'))
+
+    # Create figure with dark background
+    fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1a1a2e')
+    ax.set_facecolor('#1a1a2e')
+
+    # Draw donut chart
+    wedges, texts = ax.pie(
+        sizes,
+        colors=colors,
+        startangle=90,
+        pctdistance=0.80,
+        wedgeprops=dict(width=0.45, edgecolor='#1a1a2e', linewidth=2.5),
+    )
+
+    # Add labels outside the chart
+    for i, (wedge, label) in enumerate(zip(wedges, labels)):
+        angle = (wedge.theta2 + wedge.theta1) / 2
+        import numpy as np
+        x = np.cos(np.radians(angle))
+        y = np.sin(np.radians(angle))
+        ha = 'left' if x > 0 else 'right'
+        ax.annotate(
+            label,
+            xy=(x * 0.78, y * 0.78),
+            xytext=(x * 1.35, y * 1.35),
+            fontsize=11,
+            fontweight='bold',
+            color='white',
+            ha=ha,
+            va='center',
+            arrowprops=dict(arrowstyle='-', color='#ffffff55', lw=1.2),
+        )
+
+    # Center text — total amount
+    ax.text(0, 0.06, 'TOTAL', ha='center', va='center',
+            fontsize=14, color='#ffffffaa', fontweight='bold')
+    ax.text(0, -0.08, f'₪{total_sum:,.0f}', ha='center', va='center',
+            fontsize=22, color='white', fontweight='bold')
+
+    # Title
+    ax.set_title('Monthly Spending', fontsize=18, color='white',
+                 fontweight='bold', pad=20)
+
+    plt.tight_layout()
+
+    # Save to buffer
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+                facecolor=fig.get_facecolor(), edgecolor='none')
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
 def _escape_markdown(text: str) -> str:
     """
     Escape special Markdown characters in user-supplied text
@@ -82,16 +176,38 @@ def _escape_markdown(text: str) -> str:
     """
     if not text:
         return ""
-    # Escape characters that have meaning in Telegram Markdown V1
     for char in ['*', '_', '`', '[']:
         text = text.replace(char, f'\\{char}')
     return text
 
 
+async def _safe_send(bot, chat_id, text, parse_mode='Markdown'):
+    """
+    Send a message, auto-truncating if it exceeds Telegram's 4096 char limit.
+    Falls back to plain text if Markdown parsing fails.
+    """
+    if len(text) > TELEGRAM_MAX_LENGTH:
+        text = text[:TELEGRAM_MAX_LENGTH - 20] + "\n\n_(truncated)_"
+    try:
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+    except Exception:
+        # Markdown might be malformed — retry as plain text
+        try:
+            return await bot.send_message(chat_id=chat_id, text=text, parse_mode=None)
+        except Exception as e:
+            logger.error(f"Failed to send message to {chat_id}: {type(e).__name__}")
+            return None
+
+
 def _private_only(func):
-    """Decorator: only respond in private chats."""
+    """Decorator: only respond in private chats. Includes null guards."""
+    @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not update or not update.effective_chat:
+            return
         if update.effective_chat.type != 'private':
+            return
+        if not update.effective_user:
             return
         return await func(update, context)
     return wrapper
@@ -102,10 +218,9 @@ def _private_only(func):
 @_private_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="👋 *Welcome to FinTechBot!* 🤖💰\n\nI can help you track your expenses and save money.\n\n📝 *Try it:* Send me an expense like:\n*\"Spent 50 shekels on pizza\"*\n*\"Taxi to work 40\"*\n\nThen use /menu to see your stats! 📊\nType /help for all commands.",
-        parse_mode='Markdown'
+    await _safe_send(
+        context.bot, update.effective_chat.id,
+        "👋 *Welcome to FinTechBot!* 🤖💰\n\nI can help you track your expenses and save money.\n\n📝 *Try it:* Send me an expense like:\n*\"Spent 50 shekels on pizza\"*\n*\"Taxi to work 40\"*\n\nThen use /menu to see your stats! 📊\nType /help for all commands."
     )
 
 
@@ -124,7 +239,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗑️ /deleteall — Clear all your data\n"
         "❓ /help — This message"
     )
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=text, parse_mode='Markdown')
+    await _safe_send(context.bot, update.effective_chat.id, text)
 
 
 @_private_only
@@ -136,6 +251,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💡 AI Insights", callback_data='insights')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    if not update.message:
+        return
     await update.message.reply_text('📊 *My Finances Menu:*', reply_markup=reply_markup, parse_mode='Markdown')
 
 
@@ -143,17 +260,18 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Deletes the most recent expense."""
     user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
     last_id = db.get_last_expense_id(user_id)
 
     if not last_id:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="📭 No expenses to undo.")
+        await _safe_send(context.bot, chat_id, "📭 No expenses to undo.")
         return
 
     success = db.delete_expense(user_id, last_id)
     if success:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="↩️ *Last expense removed!*", parse_mode='Markdown')
+        await _safe_send(context.bot, chat_id, "↩️ *Last expense removed!*")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Could not undo. Try again.")
+        await _safe_send(context.bot, chat_id, "⚠️ Could not undo. Try again.")
 
 
 @_private_only
@@ -166,25 +284,27 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         try:
             amount = float(context.args[0])
+            if amount <= 0 or amount > 1_000_000:
+                await _safe_send(context.bot, chat_id, "⚠️ Budget must be between 1 and 1,000,000.")
+                return
             db.set_budget(user_id, amount)
-            await context.bot.send_message(chat_id=chat_id, text=f"💰 *Monthly budget set to {amount:.0f}!*", parse_mode='Markdown')
+            await _safe_send(context.bot, chat_id, f"💰 *Monthly budget set to {amount:.0f}!*")
         except ValueError as e:
-            await context.bot.send_message(chat_id=chat_id, text=f"⚠️ {str(e)}")
+            await _safe_send(context.bot, chat_id, f"⚠️ {str(e)}")
         except (IndexError):
-            await context.bot.send_message(chat_id=chat_id, text="⚠️ Usage: /budget `5000`", parse_mode='Markdown')
+            await _safe_send(context.bot, chat_id, "⚠️ Usage: /budget `5000`")
     else:
         budget = db.get_budget(user_id)
         if budget:
             total = db.get_monthly_summary(user_id)
             remaining = budget - total
             status = "✅" if remaining > 0 else "🚨"
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"💰 *Budget: {budget:.0f}*\n📊 Spent: {total:.0f}\n{status} Remaining: {remaining:.0f}",
-                parse_mode='Markdown'
+            await _safe_send(
+                context.bot, chat_id,
+                f"💰 *Budget: {budget:.0f}*\n📊 Spent: {total:.0f}\n{status} Remaining: {remaining:.0f}"
             )
         else:
-            await context.bot.send_message(chat_id=chat_id, text="💰 No budget set.\nUse /budget `5000` to set one.", parse_mode='Markdown')
+            await _safe_send(context.bot, chat_id, "💰 No budget set.\nUse /budget `5000` to set one.")
 
 
 @_private_only
@@ -229,20 +349,26 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             age = int(context.args[0])
             wage = float(context.args[1])
+            # Validate ranges
+            if not (13 <= age <= 120):
+                await _safe_send(context.bot, chat_id, "⚠️ Age must be between 13 and 120.")
+                return
+            if not (0 < wage <= 1_000_000):
+                await _safe_send(context.bot, chat_id, "⚠️ Wage must be between 1 and 1,000,000.")
+                return
             db.set_profile(user_id, age, wage)
-            await context.bot.send_message(chat_id=chat_id, text=f"👤 *Profile Updated!*\nAge: {age}\nWage: {wage:.0f} NIS", parse_mode='Markdown')
+            await _safe_send(context.bot, chat_id, f"👤 *Profile Updated!*\nAge: {age}\nWage: {wage:.0f} NIS")
         except ValueError:
-            await context.bot.send_message(chat_id=chat_id, text="⚠️ Usage: /profile `<age> <wage>`\nExample: `/profile 25 12000`", parse_mode='Markdown')
+            await _safe_send(context.bot, chat_id, "⚠️ Usage: /profile `<age> <wage>`\nExample: `/profile 25 12000`")
     else:
         profile = db.get_profile(user_id)
         if profile:
-            await context.bot.send_message(
-                chat_id=chat_id, 
-                text=f"👤 *Your Profile:*\nAge: {profile['age']}\nWage: {profile['wage']:.0f} NIS\n\nTo update: `/profile <age> <wage>`",
-                parse_mode='Markdown'
+            await _safe_send(
+                context.bot, chat_id,
+                f"👤 *Your Profile:*\nAge: {profile['age']}\nWage: {profile['wage']:.0f} NIS\n\nTo update: `/profile <age> <wage>`"
             )
         else:
-            await context.bot.send_message(chat_id=chat_id, text="👤 No profile set.\nUse `/profile <age> <wage>` to get better AI insights.", parse_mode='Markdown')
+            await _safe_send(context.bot, chat_id, "👤 No profile set.\nUse `/profile <age> <wage>` to get better AI insights.")
 
 
 
@@ -323,14 +449,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="📉 No valid data for a chart.")
                 return
 
-            text = f"📊 *Monthly Breakdown* (Total: {total_sum:.2f})\n\n"
-            sorted_totals = sorted(totals.items(), key=lambda x: x[1], reverse=True)
-            for cat, amount in sorted_totals:
-                percent = (amount / total_sum) * 100
-                bar_len = int(percent / 10) + 1
-                bar = "🟦" * bar_len
-                text += f"{_display_category(cat)}: *{amount:.1f}* ({percent:.0f}%)\n{bar}\n"
-            await query.edit_message_text(text=text, parse_mode='Markdown')
+            await query.edit_message_text(text="📊 *Generating your chart...*", parse_mode='Markdown')
+
+            # Generate pie chart image
+            chart_buf = _generate_pie_chart(totals, total_sum)
+
+            # Send chart as photo
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=chart_buf,
+                caption=f"📊 *Monthly Spending Breakdown*\nTotal: *₪{total_sum:,.2f}*",
+                parse_mode='Markdown'
+            )
 
         elif data == 'insights':
             await query.edit_message_text(text="🤔 *Analyzing your spending...*\n_(This might take a few seconds)_", parse_mode='Markdown')
@@ -371,21 +501,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @_private_only
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for text messages. Uses LLM to parse and saves to DB."""
+    if not update.message or not update.message.text:
+        return
+
     user_text = update.message.text
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
 
     # Rate limiting check
     if _is_rate_limited(user_id):
-        await context.bot.send_message(chat_id=chat_id, text="⏳ You're sending messages too fast. Please wait a moment.")
+        await _safe_send(context.bot, chat_id, "⏳ You're sending messages too fast. Please wait a moment.")
         return
 
     # Periodic cleanup of stale rate limit data
     _cleanup_rate_limit_data()
 
     # Input length check
-    if not user_text or len(user_text) > MAX_MESSAGE_LENGTH:
-        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Message too long. Please keep it under {MAX_MESSAGE_LENGTH} characters.")
+    if len(user_text.strip()) == 0:
+        return  # Silently ignore whitespace-only messages
+    if len(user_text) > MAX_MESSAGE_LENGTH:
+        await _safe_send(context.bot, chat_id, f"⚠️ Message too long. Please keep it under {MAX_MESSAGE_LENGTH} characters.")
         return
 
     processing_msg = await context.bot.send_message(chat_id=chat_id, text="⏳ _Processing..._", parse_mode='Markdown')
@@ -393,8 +528,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # 1. Parse with LLM
         expense_data = llm_helper.parse_expense(user_text)
+        status = expense_data.get('status', 'not_expense') if expense_data else 'not_expense'
 
-        if expense_data:
+        if status == 'success':
             amount = expense_data.get('amount')
             category = expense_data.get('category')
             description = expense_data.get('description', '')
@@ -407,11 +543,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 safe_desc = _escape_markdown(description)
                 response_text = (
                     f"✅ *Expense Saved!*\n\n"
-                    f"💰 Amount: *{amount}*\n"
+                    f"💰 Amount: *₪{amount:.2f}*\n"
                     f"📂 Category: {_display_category(category)}\n"
-                    f"📝 Details: _{safe_desc}_\n\n"
-                    f"Use /menu to see your dashboard."
+                    f"📝 Details: _{safe_desc}_\n"
                 )
+
+                # Show conversion info if currency was converted
+                if expense_data.get('converted'):
+                    orig_amount = expense_data.get('original_amount', amount)
+                    orig_currency = expense_data.get('original_currency', 'NIS')
+                    symbols = {'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥'}
+                    symbol = symbols.get(orig_currency, orig_currency)
+                    response_text += f"\n💱 Converted from *{symbol}{orig_amount:.2f}* → *₪{amount:.2f}*\n"
+
+                response_text += "\nUse /menu to see your dashboard."
 
                 # Budget check
                 budget = db.get_budget(user_id)
@@ -423,8 +568,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         response_text += f"\n\n⚠️ *Heads up:* {total:.0f}/{budget:.0f} spent (80%+ of budget)"
             else:
                 response_text = "⚠️ *Error*: Could not extract amount or category."
+
+        elif status == 'no_category':
+            # We found a number but couldn't figure out what it was for
+            amt = expense_data.get('amount')
+            if amt:
+                response_text = (
+                    f"🔢 Got *₪{amt:.0f}* but I'm not sure what it was for.\n"
+                    f"Try: *\"₪{amt:.0f} on food\"* or *\"{amt:.0f} taxi\"*"
+                )
+            else:
+                response_text = "🔢 I see a number but couldn't figure out the category.\nTry: *\"Spent 50 on food\"*"
+
         else:
-            response_text = "❓ I didn't understand that as an expense.\nTry: *\"Spent 50 on food\"*"
+            # not_expense — friendly non-financial response
+            response_text = (
+                "👋 Hey! I'm your expense tracker bot.\n"
+                "Send me what you spent, like:\n"
+                "• *\"Spent 50 on food\"*\n"
+                "• *\"taxi 35\"*\n"
+                "• *\"קניתי פיצה ב-30\"*\n\n"
+                "Or use /menu for your dashboard."
+            )
 
     except ValueError as e:
         logger.warning(f"Validation error for user {user_id}: {e}")
@@ -435,10 +600,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Delete processing message and send result
     try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=processing_msg.message_id)
+        if processing_msg:
+            await context.bot.delete_message(chat_id=chat_id, message_id=processing_msg.message_id)
     except Exception:
         pass
-    await context.bot.send_message(chat_id=chat_id, text=response_text, parse_mode='Markdown')
+    await _safe_send(context.bot, chat_id, response_text)
 
 
 if __name__ == '__main__':
@@ -455,6 +621,22 @@ if __name__ == '__main__':
     # Build the application
     application = ApplicationBuilder().token(token).build()
 
+    # ── Global Error Handler ──
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+        """Catches any uncaught exception across all handlers."""
+        logger.error(f"Unhandled exception: {context.error}", exc_info=context.error)
+        # Try to notify the user if possible
+        if isinstance(update, Update) and update.effective_chat:
+            try:
+                await _safe_send(
+                    context.bot, update.effective_chat.id,
+                    "⚠️ An unexpected error occurred. Please try again."
+                )
+            except Exception:
+                pass  # Can't even send error msg — just log and move on
+
+    application.add_error_handler(error_handler)
+
     # Add handlers
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
@@ -469,5 +651,5 @@ if __name__ == '__main__':
 
     # Run the bot
     logger.info("Bot is starting...")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 

@@ -1,20 +1,20 @@
 """
 main.py — FinTechBot REST API (FastAPI).
 
-This is the API microservice. It handles HTTP requests from:
-- The React web frontend
-- (Future) The Telegram bot via HTTP, when deployed separately
+Hardened API microservice with authentication, rate limiting,
+input validation, and proper error handling.
 
 Run:  python main.py
-Docs: Swagger/ReDoc disabled in production. Set docs_url="/docs" to re-enable.
 """
 
 import os
+import time
 import logging
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from typing import List
 
 import database as db
@@ -28,11 +28,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── App ──
+_start_time = time.time()
+
 app = FastAPI(
     title="FinTechBot API",
-    docs_url=None,    # Disable in production; set to "/docs" for dev
+    docs_url=None,    # Disabled in production; set to "/docs" for dev
     redoc_url=None,
 )
+
+
+# ── Global Exception Handler ──
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch-all: never leak stack traces to clients."""
+    logger.error(f"Unhandled API error on {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
 
 # ── CORS ──
 allowed_origins_str = os.getenv(
@@ -46,16 +60,26 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["X-API-Key", "Content-Type"],
 )
+
+
+# ── Validators ──
+
+def _validate_user_id(user_id: int):
+    """Ensure user_id is in a sane range."""
+    if user_id < 0 or user_id > 10**15:
+        raise HTTPException(status_code=400, detail="Invalid user_id")
 
 
 # ── Routes ──
 
 @app.get("/")
-async def read_root():
-    return {"status": "ok"}
+async def health_check():
+    """Health check with uptime."""
+    uptime = int(time.time() - _start_time)
+    return {"status": "ok", "uptime_seconds": uptime}
 
 
 @app.get(
@@ -65,6 +89,7 @@ async def read_root():
 )
 async def get_expenses(user_id: int, limit: int = 20):
     """Get recent expenses for a user."""
+    _validate_user_id(user_id)
     limit = min(max(1, limit), 50)
 
     rows = db.get_recent_expenses(user_id=user_id, limit=limit)
@@ -94,11 +119,24 @@ async def add_expense(expense: ExpenseModel):
             expense.category, expense.description
         )
         return {"status": "success", "message": "Expense added"}
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid expense data")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error adding expense: {type(e).__name__}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.delete(
+    "/expenses/{user_id}/{expense_id}",
+    dependencies=[Depends(verify_api_key), Depends(rate_limit_check)],
+)
+async def delete_expense(user_id: int, expense_id: int):
+    """Delete a specific expense (owner-only)."""
+    _validate_user_id(user_id)
+    success = db.delete_expense(user_id, expense_id)
+    if success:
+        return {"status": "success", "message": "Expense deleted"}
+    raise HTTPException(status_code=404, detail="Expense not found or not owned by user")
 
 
 @app.get(
@@ -107,6 +145,7 @@ async def add_expense(expense: ExpenseModel):
 )
 async def get_summary(user_id: int):
     """Get total spent this month."""
+    _validate_user_id(user_id)
     total = db.get_monthly_summary(user_id)
     return {"user_id": user_id, "monthly_total": total}
 
@@ -117,6 +156,7 @@ async def get_summary(user_id: int):
 )
 async def get_chart_data(user_id: int):
     """Get category totals for charts."""
+    _validate_user_id(user_id)
     totals = db.get_category_totals(user_id)
     return totals
 
@@ -128,3 +168,4 @@ if __name__ == "__main__":
 
     db.init_db()
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

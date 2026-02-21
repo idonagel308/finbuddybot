@@ -30,5 +30,6 @@ Thumbs.db
 
 .env
 venv/
+.venv/
 __pycache__/
 finance.db
