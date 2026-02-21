@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import io
 import logging
 import time
@@ -35,7 +36,7 @@ TELEGRAM_MAX_LENGTH = 4096  # Telegram's hard limit for a single message
 _user_message_timestamps = defaultdict(list)
 
 # Whitelist of valid callback data values
-VALID_CALLBACKS = {'last_expenses', 'monthly_list', 'pie_chart', 'insights'}
+VALID_CALLBACKS = {'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart', 'insights', 'delete_all_monthly', 'back_to_menu'}
 
 # ── Emoji Display Mapping ──
 # The data layer stores clean strings ('Food', 'Transport').
@@ -246,7 +247,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sends the interactive menu."""
     keyboard = [
-        [InlineKeyboardButton("📜 Last Expenses", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly List", callback_data='monthly_list')],
+        [InlineKeyboardButton("📜 Last Expenses", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
         [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart')],
         [InlineKeyboardButton("💡 AI Insights", callback_data='insights')],
     ]
@@ -391,6 +392,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text="✅ Cancelled. Your expenses are safe.")
         return
 
+    # Handle "delete all monthly" confirmation
+    if data == 'confirm_delete_monthly':
+        count = db.delete_monthly_expenses(telegram_id)
+        await query.edit_message_text(
+            text=f"🗑️ *Done!* Deleted {count} expense(s) from this month.\n\nUse /menu to continue.",
+            parse_mode='Markdown'
+        )
+        return
+    if data == 'cancel_delete_monthly':
+        await query.edit_message_text(text="✅ Cancelled. Your monthly expenses are safe.")
+        return
+
     # Handle single delete callbacks (format: "del_123")
     if data.startswith("del_"):
         try:
@@ -402,6 +415,60 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="⚠️ Could not delete. It may already be removed.")
         except (ValueError, Exception):
             await query.edit_message_text(text="⚠️ Error deleting expense.")
+        return
+
+    # Handle month drill-down callbacks (format: "month_2026_2")
+    if data.startswith("month_"):
+        try:
+            parts = data.split('_')
+            year = int(parts[1])
+            month = int(parts[2])
+
+            MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+                           'July', 'August', 'September', 'October', 'November', 'December']
+
+            expenses = db.get_monthly_expenses(user_id=telegram_id, year=year, month=month)
+            if not expenses:
+                await query.edit_message_text(
+                    text=f"📅 No expenses in {MONTH_NAMES[month]} {year}.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='year_overview')]])
+                )
+                return
+
+            total = sum(e[2] for e in expenses)
+            text = f"📅 *{MONTH_NAMES[month]} {year}*\n💰 *Total: ₪{total:,.2f}*\n\n"
+
+            # Group by category for a cleaner view
+            cat_totals = {}
+            for exp in expenses:
+                cat = exp[3]
+                cat_totals[cat] = cat_totals.get(cat, 0) + exp[2]
+
+            # Category summary
+            for cat, cat_total in sorted(cat_totals.items(), key=lambda x: x[1], reverse=True):
+                pct = (cat_total / total) * 100
+                text += f"{_display_category(cat)}: *₪{cat_total:,.2f}* ({pct:.0f}%)\n"
+
+            text += f"\n📝 *{len(expenses)} transaction(s):*\n\n"
+
+            # Individual expenses (limit to avoid Telegram message length)
+            for exp in expenses[:20]:
+                date_short = exp[1][8:10]  # Day of month
+                safe_desc = _escape_markdown(exp[4] or '') if len(exp) > 4 else ''
+                text += f"  `{date_short}` ₪{exp[2]:,.2f} {_display_category(exp[3])}"
+                if safe_desc:
+                    text += f" _{safe_desc}_"
+                text += "\n"
+
+            if len(expenses) > 20:
+                text += f"\n_...and {len(expenses) - 20} more_\n"
+
+            buttons = [[InlineKeyboardButton("⬅️ Back to Year", callback_data='year_overview')]]
+            reply_markup = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
+        except (ValueError, IndexError, Exception) as e:
+            logger.error(f"Error in month drill-down: {type(e).__name__}")
+            await query.edit_message_text(text="⚠️ Error loading month data.")
         return
 
     # Validate other callback data against whitelist
@@ -427,16 +494,89 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
 
         elif data == 'monthly_list':
+            # Sub-menu: This Month vs Yearly Overview
+            keyboard = [
+                [InlineKeyboardButton("📅 This Month", callback_data='this_month')],
+                [InlineKeyboardButton("📆 Yearly Overview", callback_data='year_overview')],
+                [InlineKeyboardButton("⬅️ Back to Menu", callback_data='back_to_menu')],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="📊 *Expense History*\n\nChoose a view:",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+
+        elif data == 'back_to_menu':
+            keyboard = [
+                [InlineKeyboardButton("📜 Last Expenses", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
+                [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart')],
+                [InlineKeyboardButton("💡 AI Insights", callback_data='insights')],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text='📊 *My Finances Menu:*', reply_markup=reply_markup, parse_mode='Markdown')
+
+        elif data == 'this_month':
             expenses = db.get_monthly_expenses(user_id=telegram_id)
             if not expenses:
                 text = "📅 No expenses this month."
+                await query.edit_message_text(text=text, parse_mode='Markdown')
             else:
                 total = sum(e[2] for e in expenses)
-                text = f"📅 *This Month's Activity*\n🏆 *Total: {total:.2f}*\n\n"
+                now = datetime.now()
+                month_name = now.strftime('%B %Y')
+                text = f"📅 *{month_name}*\n💰 *Total: ₪{total:,.2f}*\n\n"
                 for exp in expenses:
                     date_short = exp[1][5:10]
-                    text += f"• `{date_short}`: *{exp[2]}* - {_display_category(exp[3])}\n"
-            await query.edit_message_text(text=text, parse_mode='Markdown')
+                    text += f"• `{date_short}`: *₪{exp[2]:,.2f}* - {_display_category(exp[3])}\n"
+                buttons = [
+                    [InlineKeyboardButton("🗑️ Delete All This Month", callback_data='delete_all_monthly')],
+                    [InlineKeyboardButton("⬅️ Back", callback_data='monthly_list')],
+                ]
+                reply_markup = InlineKeyboardMarkup(buttons)
+                await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
+
+        elif data == 'year_overview':
+            now = datetime.now()
+            year = now.year
+            month_totals = db.get_yearly_month_totals(telegram_id, year)
+
+            if not month_totals:
+                await query.edit_message_text(text=f"📆 No expenses in {year} yet.")
+                return
+
+            grand_total = sum(month_totals.values())
+            text = f"📆 *{year} Yearly Overview*\n💰 *Grand Total: ₪{grand_total:,.2f}*\n\n"
+
+            MONTH_NAMES = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+            buttons = []
+            for m in range(1, 13):
+                total = month_totals.get(m, 0)
+                if total > 0:
+                    pct = (total / grand_total) * 100
+                    text += f"📌 *{MONTH_NAMES[m]}*: ₪{total:,.2f} ({pct:.0f}%)\n"
+                    buttons.append([InlineKeyboardButton(
+                        f"📅 {MONTH_NAMES[m]} — ₪{total:,.0f}",
+                        callback_data=f'month_{year}_{m}'
+                    )])
+
+            buttons.append([InlineKeyboardButton("⬅️ Back", callback_data='monthly_list')])
+            reply_markup = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
+
+        elif data == 'delete_all_monthly':
+            keyboard = [
+                [InlineKeyboardButton("🗑️ Yes, delete this month", callback_data='confirm_delete_monthly')],
+                [InlineKeyboardButton("❌ Cancel", callback_data='cancel_delete_monthly')],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="⚠️ *Are you sure you want to delete ALL expenses for this month?*\n\nThis action *cannot be undone!*",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
 
         elif data == 'pie_chart':
             totals = db.get_category_totals(user_id=telegram_id)

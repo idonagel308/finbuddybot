@@ -176,21 +176,40 @@ def get_recent_expenses(user_id: int = None, limit: int = 5):
         return []
 
 
-def get_monthly_summary(user_id: int):
+def _month_range(year: int = None, month: int = None):
     """
-    Calculates total expenses for the current month for a specific user.
+    Returns (start_date, end_date) strings for a given month.
+    Uses the current month if year/month are not provided.
+    start_date is inclusive, end_date is exclusive (first day of next month).
+    """
+    now = datetime.now()
+    y = year or now.year
+    m = month or now.month
+
+    start = datetime(y, m, 1).isoformat()
+    # Roll to first day of next month
+    if m == 12:
+        end = datetime(y + 1, 1, 1).isoformat()
+    else:
+        end = datetime(y, m + 1, 1).isoformat()
+    return start, end
+
+
+def get_monthly_summary(user_id: int, year: int = None, month: int = None):
+    """
+    Calculates total expenses for a specific month (defaults to current month).
+    Filters strictly by the transaction date.
     """
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-
-            current_month = datetime.now().strftime('%Y-%m')
+            start, end = _month_range(year, month)
 
             cursor.execute('''
                 SELECT SUM(amount) 
                 FROM expenses 
-                WHERE user_id = ? AND date LIKE ?
-            ''', (user_id, f'{current_month}%'))
+                WHERE user_id = ? AND date >= ? AND date < ?
+            ''', (user_id, start, end))
 
             result = cursor.fetchone()
             return result[0] if result[0] else 0.0
@@ -199,22 +218,48 @@ def get_monthly_summary(user_id: int):
         return 0.0
 
 
-def get_monthly_expenses(user_id: int):
+def get_yearly_month_totals(user_id: int, year: int = None) -> dict:
     """
-    Retrieves all expenses for the current month for a specific user.
+    Returns a dict of {month_number: total_amount} for each month that has expenses in the given year.
+    Defaults to current year.
+    """
+    _validate_user_id(user_id)
+    if year is None:
+        year = datetime.now().year
+
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT CAST(strftime('%m', date) AS INTEGER) as month, SUM(amount) as total
+                FROM expenses
+                WHERE user_id = ? AND strftime('%Y', date) = ?
+                GROUP BY month
+                ORDER BY month
+            ''', (user_id, str(year)))
+            rows = cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+    except Exception as e:
+        logger.error(f"Error getting yearly totals: {e}")
+        return {}
+
+
+def get_monthly_expenses(user_id: int, year: int = None, month: int = None):
+    """
+    Retrieves all expenses for a specific month (defaults to current month).
+    Only includes transactions whose date falls within the given month.
     """
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-
-            current_month = datetime.now().strftime('%Y-%m')
+            start, end = _month_range(year, month)
 
             cursor.execute('''
                 SELECT id, date, amount, category, description 
                 FROM expenses 
-                WHERE user_id = ? AND date LIKE ?
+                WHERE user_id = ? AND date >= ? AND date < ?
                 ORDER BY date DESC
-            ''', (user_id, f'{current_month}%'))
+            ''', (user_id, start, end))
 
             rows = cursor.fetchall()
             return rows
@@ -223,22 +268,22 @@ def get_monthly_expenses(user_id: int):
         return []
 
 
-def get_category_totals(user_id: int):
+def get_category_totals(user_id: int, year: int = None, month: int = None):
     """
-    Returns a dictionary of {category: total_amount} for the current month.
+    Returns a dictionary of {category: total_amount} for a specific month.
+    Defaults to the current month. Filters by transaction date range.
     """
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-
-            current_month = datetime.now().strftime('%Y-%m')
+            start, end = _month_range(year, month)
 
             cursor.execute('''
                 SELECT category, SUM(amount) 
                 FROM expenses 
-                WHERE user_id = ? AND date LIKE ?
+                WHERE user_id = ? AND date >= ? AND date < ?
                 GROUP BY category
-            ''', (user_id, f'{current_month}%'))
+            ''', (user_id, start, end))
 
             rows = cursor.fetchall()
             return {row[0]: row[1] for row in rows}
@@ -381,6 +426,25 @@ def delete_all_expenses(user_id: int) -> int:
             return count
     except sqlite3.Error as e:
         logger.error(f"Error deleting all expenses: {e}")
+        return 0
+
+
+def delete_monthly_expenses(user_id: int) -> int:
+    """Deletes all expenses for the current month for a given user. Returns the number of deleted rows."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            current_month = datetime.now().strftime('%Y-%m')
+            cursor.execute(
+                'DELETE FROM expenses WHERE user_id = ? AND date LIKE ?',
+                (user_id, f'{current_month}%')
+            )
+            conn.commit()
+            count = cursor.rowcount
+            logger.info(f"Deleted {count} monthly expenses for user {user_id}")
+            return count
+    except sqlite3.Error as e:
+        logger.error(f"Error deleting monthly expenses: {e}")
         return 0
 
 
