@@ -1,12 +1,13 @@
 import os
-from datetime import datetime
 import io
+import asyncio
 import logging
 import time
 import traceback
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend (no GUI needed)
 import matplotlib.pyplot as plt
+import numpy as np
 from functools import wraps
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -104,70 +105,74 @@ CATEGORY_COLORS = {
 def _generate_pie_chart(totals: dict, total_sum: float) -> io.BytesIO:
     """
     Generates a professional donut pie chart image and returns it as a BytesIO buffer.
+    Returns None if generation fails.
     """
-    # Sort by amount descending
-    sorted_items = sorted(totals.items(), key=lambda x: x[1], reverse=True)
-    labels = []
-    sizes = []
-    colors = []
+    try:
+        # Sort by amount descending
+        sorted_items = sorted(totals.items(), key=lambda x: x[1], reverse=True)
+        labels = []
+        sizes = []
+        colors = []
 
-    for cat, amount in sorted_items:
-        percent = (amount / total_sum) * 100
-        labels.append(f"{_display_category(cat)}\n₪{amount:,.0f} ({percent:.0f}%)")
-        sizes.append(amount)
-        colors.append(CATEGORY_COLORS.get(cat, '#AEB6BF'))
+        for cat, amount in sorted_items:
+            percent = (amount / total_sum) * 100
+            labels.append(f"{_display_category(cat)}\n₪{amount:,.0f} ({percent:.0f}%)")
+            sizes.append(amount)
+            colors.append(CATEGORY_COLORS.get(cat, '#AEB6BF'))
 
-    # Create figure with dark background
-    fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1a1a2e')
-    ax.set_facecolor('#1a1a2e')
+        # Create figure with dark background
+        fig, ax = plt.subplots(figsize=(8, 8), facecolor='#1a1a2e')
+        ax.set_facecolor('#1a1a2e')
 
-    # Draw donut chart
-    wedges, texts = ax.pie(
-        sizes,
-        colors=colors,
-        startangle=90,
-        pctdistance=0.80,
-        wedgeprops=dict(width=0.45, edgecolor='#1a1a2e', linewidth=2.5),
-    )
-
-    # Add labels outside the chart
-    for i, (wedge, label) in enumerate(zip(wedges, labels)):
-        angle = (wedge.theta2 + wedge.theta1) / 2
-        import numpy as np
-        x = np.cos(np.radians(angle))
-        y = np.sin(np.radians(angle))
-        ha = 'left' if x > 0 else 'right'
-        ax.annotate(
-            label,
-            xy=(x * 0.78, y * 0.78),
-            xytext=(x * 1.35, y * 1.35),
-            fontsize=11,
-            fontweight='bold',
-            color='white',
-            ha=ha,
-            va='center',
-            arrowprops=dict(arrowstyle='-', color='#ffffff55', lw=1.2),
+        # Draw donut chart
+        wedges, texts = ax.pie(
+            sizes,
+            colors=colors,
+            startangle=90,
+            pctdistance=0.80,
+            wedgeprops=dict(width=0.45, edgecolor='#1a1a2e', linewidth=2.5),
         )
 
-    # Center text — total amount
-    ax.text(0, 0.06, 'TOTAL', ha='center', va='center',
-            fontsize=14, color='#ffffffaa', fontweight='bold')
-    ax.text(0, -0.08, f'₪{total_sum:,.0f}', ha='center', va='center',
-            fontsize=22, color='white', fontweight='bold')
+        # Add labels outside the chart
+        for i, (wedge, label) in enumerate(zip(wedges, labels)):
+            angle = (wedge.theta2 + wedge.theta1) / 2
+            x = np.cos(np.radians(angle))
+            y = np.sin(np.radians(angle))
+            ha = 'left' if x > 0 else 'right'
+            ax.annotate(
+                label,
+                xy=(x * 0.78, y * 0.78),
+                xytext=(x * 1.35, y * 1.35),
+                fontsize=11,
+                fontweight='bold',
+                color='white',
+                ha=ha,
+                va='center',
+                arrowprops=dict(arrowstyle='-', color='#ffffff55', lw=1.2),
+            )
 
-    # Title
-    ax.set_title('Monthly Spending', fontsize=18, color='white',
-                 fontweight='bold', pad=20)
+        # Center text — total amount
+        ax.text(0, 0.06, 'TOTAL', ha='center', va='center',
+                fontsize=14, color='#ffffffaa', fontweight='bold')
+        ax.text(0, -0.08, f'₪{total_sum:,.0f}', ha='center', va='center',
+                fontsize=22, color='white', fontweight='bold')
 
-    plt.tight_layout()
+        # Title
+        ax.set_title('Monthly Spending', fontsize=18, color='white',
+                     fontweight='bold', pad=20)
 
-    # Save to buffer
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
-                facecolor=fig.get_facecolor(), edgecolor='none')
-    plt.close(fig)
-    buf.seek(0)
-    return buf
+        plt.tight_layout()
+
+        # Save to buffer
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+                    facecolor=fig.get_facecolor(), edgecolor='none')
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        logger.error(f"Error generating pie chart: {type(e).__name__} - {e}")
+        return None
 
 
 def _escape_markdown(text: str) -> str:
@@ -385,7 +390,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle "delete all" confirmation
     if data == 'confirm_delete_all':
-        count = db.delete_all_expenses(telegram_id)
+        count = await asyncio.to_thread(db.delete_all_expenses, telegram_id)
         await query.edit_message_text(text=f"🗑️ *Done!* Deleted {count} expense(s).\n\nYou're starting fresh.", parse_mode='Markdown')
         return
     if data == 'cancel_delete_all':
@@ -394,7 +399,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Handle "delete all monthly" confirmation
     if data == 'confirm_delete_monthly':
-        count = db.delete_monthly_expenses(telegram_id)
+        count = await asyncio.to_thread(db.delete_monthly_expenses, telegram_id)
         await query.edit_message_text(
             text=f"🗑️ *Done!* Deleted {count} expense(s) from this month.\n\nUse /menu to continue.",
             parse_mode='Markdown'
@@ -408,7 +413,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("del_"):
         try:
             expense_id = int(data[4:])
-            success = db.delete_expense(telegram_id, expense_id)
+            success = await asyncio.to_thread(db.delete_expense, telegram_id, expense_id)
             if success:
                 await query.edit_message_text(text="🗑️ *Expense deleted!*\n\nUse /menu to refresh.", parse_mode='Markdown')
             else:
@@ -427,7 +432,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
                            'July', 'August', 'September', 'October', 'November', 'December']
 
-            expenses = db.get_monthly_expenses(user_id=telegram_id, year=year, month=month)
+            expenses = await asyncio.to_thread(db.get_monthly_expenses, user_id=telegram_id, year=year, month=month)
             if not expenses:
                 await query.edit_message_text(
                     text=f"📅 No expenses in {MONTH_NAMES[month]} {year}.",
@@ -478,7 +483,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         if data == 'last_expenses':
-            expenses = db.get_recent_expenses(user_id=telegram_id, limit=5)
+            expenses = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
             if not expenses:
                 text = "📭 No expenses found yet."
                 await query.edit_message_text(text=text)
@@ -517,7 +522,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text='📊 *My Finances Menu:*', reply_markup=reply_markup, parse_mode='Markdown')
 
         elif data == 'this_month':
-            expenses = db.get_monthly_expenses(user_id=telegram_id)
+            expenses = await asyncio.to_thread(db.get_monthly_expenses, user_id=telegram_id)
             if not expenses:
                 text = "📅 No expenses this month."
                 await query.edit_message_text(text=text, parse_mode='Markdown')
@@ -539,7 +544,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == 'year_overview':
             now = datetime.now()
             year = now.year
-            month_totals = db.get_yearly_month_totals(telegram_id, year)
+            month_totals = await asyncio.to_thread(db.get_yearly_month_totals, telegram_id, year)
 
             if not month_totals:
                 await query.edit_message_text(text=f"📆 No expenses in {year} yet.")
@@ -579,7 +584,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'pie_chart':
-            totals = db.get_category_totals(user_id=telegram_id)
+            totals = await asyncio.to_thread(db.get_category_totals, user_id=telegram_id)
             if not totals:
                 await query.edit_message_text(text="📉 No data for a chart yet.")
                 return
@@ -591,29 +596,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             await query.edit_message_text(text="📊 *Generating your chart...*", parse_mode='Markdown')
 
-            # Generate pie chart image
-            chart_buf = _generate_pie_chart(totals, total_sum)
+            # Create pie chart
+            chart_buf = await asyncio.to_thread(_generate_pie_chart, totals, total_sum)
 
-            # Send chart as photo
-            await context.bot.send_photo(
-                chat_id=query.message.chat_id,
-                photo=chart_buf,
-                caption=f"📊 *Monthly Spending Breakdown*\nTotal: *₪{total_sum:,.2f}*",
-                parse_mode='Markdown'
-            )
+            caption = f"📊 *Spending Breakdown*\n💰 *Total: ₪{total_sum:,.2f}*\n\n"
+            for cat, amt in sorted(totals.items(), key=lambda x: x[1], reverse=True):
+                pct = (amt / total_sum) * 100
+                caption += f"• {_display_category(cat)}: ₪{amt:,.2f} ({pct:.0f}%)\n"
+
+            buttons = [[InlineKeyboardButton("⬅️ Back", callback_data='menu')]]
+
+            if chart_buf is None:
+                # Fallback to text if chart generation fails
+                await query.edit_message_text(
+                    text="⚠️ Chart generation failed, but here's your text breakdown:\n\n" + caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode='Markdown'
+                )
+            else:
+                await context.bot.send_photo(
+                    chat_id=query.message.chat_id,
+                    photo=chart_buf,
+                    caption=caption,
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode='Markdown'
+                )
 
         elif data == 'insights':
-            await query.edit_message_text(text="🤔 *Analyzing your spending...*\n_(This might take a few seconds)_", parse_mode='Markdown')
-            
-            # Gather all context for smarter insights
-            totals = db.get_category_totals(user_id=telegram_id)
-            if not totals or sum(totals.values()) <= 0:
-                await query.edit_message_text(text="❌ Not enough data for insights yet. Try adding some expenses first!")
-                return
+            status_msg = await query.edit_message_text(text="🧠 *Analyzing your spending...*\n\n_This might take a moment._", parse_mode='Markdown')
 
-            budget = db.get_budget(telegram_id)
-            recent = db.get_recent_expenses(user_id=telegram_id, limit=10)
-            profile = db.get_profile(telegram_id)
+            # Fetch all needed context quickly
+            totals = await asyncio.to_thread(db.get_category_totals, telegram_id)
+            budget = await asyncio.to_thread(db.get_budget, telegram_id)
+            recent = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
+            profile = await asyncio.to_thread(db.get_profile, telegram_id)
             
             # Call enhanced insights
             insight = llm_helper.generate_insights(
@@ -677,7 +693,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # 2. Save to Database
             if amount and category:
-                db.add_expense(user_id, amount, category, description)
+                await asyncio.to_thread(db.add_expense, user_id, amount, category, description)
 
                 # Escape description for safe Markdown display
                 safe_desc = _escape_markdown(description)
@@ -699,9 +715,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response_text += "\nUse /menu to see your dashboard."
 
                 # Budget check
-                budget = db.get_budget(user_id)
+                budget = await asyncio.to_thread(db.get_budget, user_id)
                 if budget:
-                    total = db.get_monthly_summary(user_id)
+                    total = await asyncio.to_thread(db.get_monthly_summary, user_id)
                     if total > budget:
                         response_text += f"\n\n🚨 *Budget alert!* You've spent {total:.0f}/{budget:.0f}"
                     elif total > budget * 0.8:
@@ -777,15 +793,28 @@ if __name__ == '__main__':
 
     application.add_error_handler(error_handler)
 
-    # Add handlers
-    application.add_handler(CommandHandler('start', start))
+    # Add conversation handler for onboarding & settings
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start), CommandHandler('settings', settings_command)],
+        states={
+            ASK_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_age)],
+            ASK_INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_income)],
+            ASK_CURRENCY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_currency)],
+            ASK_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_info)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_onboarding)]
+    )
+    application.add_handler(conv_handler)
+
+    # Add general handlers
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('menu', menu_command))
     application.add_handler(CommandHandler('undo', undo_command))
     application.add_handler(CommandHandler('budget', budget_command))
     application.add_handler(CommandHandler('export', export_command))
     application.add_handler(CommandHandler('deleteall', deleteall_command))
-    application.add_handler(CommandHandler('profile', profile_command))
+    
+    # The normal text message handler for parsing expenses
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.add_handler(CallbackQueryHandler(button_handler))
 

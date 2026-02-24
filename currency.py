@@ -122,6 +122,9 @@ CURRENCY_PATTERNS = {
     r'\byen\b': 'JPY',
 }
 
+# Pre-compiled patterns for O(1)-setup matching
+_COMPILED_CURRENCY_PATTERNS = [(re.compile(p), code) for p, code in CURRENCY_PATTERNS.items()]
+
 
 def detect_currency(text: str) -> str:
     """
@@ -129,8 +132,8 @@ def detect_currency(text: str) -> str:
     Defaults to 'NIS' if no currency is detected.
     """
     text_lower = text.lower()
-    for pattern, code in CURRENCY_PATTERNS.items():
-        if re.search(pattern, text_lower):
+    for regex, code in _COMPILED_CURRENCY_PATTERNS:
+        if regex.search(text_lower):
             return code
     return 'NIS'
 

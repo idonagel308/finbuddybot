@@ -33,3 +33,7 @@ venv/
 .venv/
 __pycache__/
 finance.db
+*.json
+# sheets api 
+
+finbuddy-etl-064699307cb2.json

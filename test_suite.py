@@ -282,21 +282,21 @@ def test_database():
 
     # Profile validation
     try:
-        db.set_profile(TEST_USER, 5, 10000)  # age too young
+        db.set_profile(TEST_USER, 5, 120000, 'NIS', 'info')  # age too young
         _test("Profile: age=5 rejected", False, "should have raised ValueError")
     except ValueError:
         _test("Profile: age=5 rejected", True)
 
     try:
-        db.set_profile(TEST_USER, 25, -100)  # negative wage
-        _test("Profile: negative wage rejected", False, "should have raised ValueError")
+        db.set_profile(TEST_USER, 25, -100, 'NIS', 'info')  # negative income
+        _test("Profile: negative income rejected", False, "should have raised ValueError")
     except ValueError:
-        _test("Profile: negative wage rejected", True)
+        _test("Profile: negative income rejected", True)
 
     # Valid profile
-    db.set_profile(TEST_USER, 25, 12000)
+    db.set_profile(TEST_USER, 25, 120000, 'USD', 'Saving for a house')
     profile = db.get_profile(TEST_USER)
-    _test("Valid profile saved", profile is not None and profile['age'] == 25)
+    _test("Valid profile saved", profile is not None and profile['age'] == 25 and profile['currency'] == 'USD')
 
     # Budget
     db.set_budget(TEST_USER, 1000.0)
@@ -320,6 +320,7 @@ def test_database():
     _test("All expenses deleted", len(remaining) == 0)
 
     # Cleanup
+    db.close_connection()
     os.remove(TEST_DB)
     _test("Test DB cleaned up", not os.path.exists(TEST_DB))
 

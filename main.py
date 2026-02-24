@@ -12,12 +12,14 @@ import time
 import logging
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Depends, Request
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import List
 
 import database as db
+import sheets_etl
 from models import ExpenseModel, ExpenseResponse
 from security import verify_api_key, rate_limit_check
 
@@ -111,13 +113,30 @@ async def get_expenses(user_id: int, limit: int = 20):
     "/expenses",
     dependencies=[Depends(verify_api_key), Depends(rate_limit_check)],
 )
-async def add_expense(expense: ExpenseModel):
+async def add_expense(expense: ExpenseModel, background_tasks: BackgroundTasks):
     """Add a new expense."""
     try:
         db.add_expense(
             expense.user_id, expense.amount,
             expense.category, expense.description
         )
+        
+        # Get the ID of the newly added expense
+        expense_id = db.get_last_expense_id(expense.user_id)
+        
+        # Create dictionary for the ETL process
+        expense_dict = {
+            "id": expense_id,
+            "user_id": expense.user_id,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "amount": expense.amount,
+            "category": expense.category,
+            "description": expense.description
+        }
+        
+        # Enqueue the Google Sheets sync as a background task
+        background_tasks.add_task(sheets_etl.append_expense_to_sheet, expense_dict)
+        
         return {"status": "success", "message": "Expense added"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -29,6 +29,7 @@ MODELS_TO_TRY = [
 
 # Cache GenerativeModel instances to avoid recreating on every call
 _model_cache = {}
+_insight_model_cache = {}
 
 # Allowed categories for validation (clean strings — no emojis in the data layer)
 ALLOWED_CATEGORIES = {
@@ -184,7 +185,15 @@ def _fuzzy_match_category(raw_category: str) -> str:
     return 'Other'
 
 
-def generate_insights(totals, age=None, wage=None, budget=None, recent_expenses=None):
+def generate_insights(
+    totals: dict, 
+    age: int = None, 
+    yearly_income: float = None, 
+    budget: float = None, 
+    recent_expenses: list = None,
+    currency: str = 'NIS',
+    additional_info: str = None
+):
     """
     Generates tailored financial advice based on structured spending data.
     """
@@ -192,31 +201,35 @@ def generate_insights(totals, age=None, wage=None, budget=None, recent_expenses=
         return "⚠️ API Key missing. Cannot generate insights."
 
     # Format context for segments
-    totals_str = "\n".join([f"- {cat}: {amount:.2f}" for cat, amount in totals.items()])
-    
     profile_context = ""
-    if age and wage:
-        profile_context = f"- User Profile: {age} years old, earning {wage:.0f} NIS/month\n"
-    
-    budget_context = ""
-    if budget:
-        total_spent = sum(totals.values())
-        budget_context = f"- Monthly Budget: {budget:.0f} (Currently at {total_spent/budget*100:.0f}%)\n"
+    if age: profile_context += f"User Age: {age}\n"
+    if yearly_income: profile_context += f"Yearly Estimated Income: {currency} {yearly_income}\n"
+    if budget: profile_context += f"Monthly Budget: {currency} {budget}\n"
+    if additional_info: profile_context += f"User Goals/Info: {additional_info}\n"
 
-    recent_str = ""
+    # Prepare recent expenses for JSON output
+    repr_recent = []
     if recent_expenses:
-        recent_str = "\nRecent Transactions:\n" + "\n".join([
-            f"- {e[1][5:10]}: {e[2]} on {e[3]} ({e[4]})" for e in recent_expenses[:5]
-        ])
+        for e in recent_expenses[:5]:
+            # Assuming e is (id, timestamp, amount, category, description)
+            # Adjust this if the structure of recent_expenses is different
+            repr_recent.append({
+                "date": e[1][5:10], # Assuming timestamp is a string like "YYYY-MM-DD HH:MM:SS"
+                "amount": e[2],
+                "category": e[3],
+                "description": e[4]
+            })
 
     prompt = f"""
     You are an elite personal financial coach. Analyze this user's data and provide 3 HIGHLY SPECIFIC, actionable tips.
     
     DATA POINTS:
-    {profile_context}{budget_context}
+    {profile_context}
     Breakdown by Category:
-    {totals_str}
-    {recent_str}
+    {json.dumps(totals, indent=2)}
+    
+    Recent Expenses:
+    {json.dumps(repr_recent, indent=2) if repr_recent else 'None'}
     
     GUIDELINES:
     1. Be concise (max 60 words total).
@@ -228,9 +241,12 @@ def generate_insights(totals, age=None, wage=None, budget=None, recent_expenses=
 
     for model_name in MODELS_TO_TRY:
         try:
-            if model_name not in _model_cache:
-                _model_cache[model_name] = genai.GenerativeModel(model_name)
-            response = _model_cache[model_name].generate_content(prompt)
+            if model_name not in _insight_model_cache:
+                _insight_model_cache[model_name] = genai.GenerativeModel(
+                    model_name,
+                    generation_config=genai.GenerationConfig(temperature=0.5),
+                )
+            response = _insight_model_cache[model_name].generate_content(prompt)
             return response.text.strip()
         except Exception as e:
             logger.warning(f"generate_insights: {model_name} failed: {type(e).__name__}")
@@ -262,73 +278,49 @@ def parse_expense(text):
 
     # --- Try LLM First ---
     if api_key:
-        prompt = f"""
-You are an expense-tracking assistant. The user sends short messages about money they spent.
-Your ONLY job is to extract: amount, category, and description.
+        prompt = f"""Extract expense info from the user message. User may write in English or Hebrew.
+Return JSON with: "amount" (number), "category" (one of: Housing, Food, Transport, Entertainment, Shopping, Health, Education, Financial, Other), "description" (short string).
+Return null if not an expense.
+Category hints: Housing=rent/bills/חשמל/שכירות, Food=groceries/restaurant/סופר/קפה, Transport=taxi/bus/דלק/מונית, Entertainment=movies/Netflix/בילוי, Shopping=clothes/electronics/קניות, Health=doctor/gym/רופא, Education=books/courses/לימודים, Financial=insurance/tax/ביטוח.
+Ignore currency words (שקל, dollars, etc), just extract the number.
 
-The user may write in English, Hebrew, or a mix of both.
-Common Hebrew patterns:
-- "שילמתי X על Y" = paid X on Y
-- "קניתי Y ב-X" = bought Y for X
-- "הוצאתי X" = spent X
-- "X שקל/ש"ח על Y" = X shekels on Y
+Examples:
+"spent 50 on pizza" → {{"amount":50,"category":"Food","description":"pizza"}}
+"שילמתי 200 בסופר" → {{"amount":200,"category":"Food","description":"supermarket"}}
+"hello" → null
 
-RETURN ONLY a raw JSON object (no markdown, no code fences) with:
-- "amount": number (the monetary value — ignore currency words like שקל, ש"ח, NIS, dollars)
-- "category": EXACTLY one of these strings:
-    'Housing'       — rent, bills, electricity, water, internet, maintenance, ארנונה, שכירות, חשמל
-    'Food'          — groceries, restaurants, coffee, food delivery, supermarket, סופר, אוכל, מסעדה, קפה
-    'Transport'     — taxi, bus, train, fuel, parking, Uber, Gett, תחבורה, דלק, מונית, אוטובוס
-    'Entertainment' — movies, games, concerts, bar, Netflix, streaming, בילוי, סרט, הופעה
-    'Shopping'      — clothes, electronics, Amazon, online shopping, בגדים, קניות, נעליים
-    'Health'        — doctor, gym, pharmacy, dentist, רופא, בריאות, מרקחת, חדר כושר
-    'Education'     — books, courses, tuition, school, לימודים, ספרים, קורס
-    'Financial'     — savings, investments, taxes, insurance, fees, bank, ביטוח, מס, בנק
-    'Other'         — anything that doesn't fit above
-- "description": short string describing what was bought
-
-EXAMPLES:
-Input: "spent 50 on pizza"
-Output: {{"amount": 50, "category": "Food", "description": "pizza"}}
-
-Input: "שילמתי 200 שקל בסופר"
-Output: {{"amount": 200, "category": "Food", "description": "supermarket groceries"}}
-
-Input: "taxi to work 35"
-Output: {{"amount": 35, "category": "Transport", "description": "taxi to work"}}
-
-Input: "קניתי נעליים ב350"
-Output: {{"amount": 350, "category": "Shopping", "description": "shoes"}}
-
-Input: "Netflix 45"
-Output: {{"amount": 45, "category": "Entertainment", "description": "Netflix subscription"}}
-
-Input: "hello how are you"
-Output: null
-
-Now extract from: "{safe_text}"
+Extract from: "{safe_text}"
 """
 
         for model_name in MODELS_TO_TRY:
             try:
                 if model_name not in _model_cache:
-                    _model_cache[model_name] = genai.GenerativeModel(model_name)
+                    _model_cache[model_name] = genai.GenerativeModel(
+                        model_name,
+                        generation_config=genai.GenerationConfig(
+                            response_mime_type="application/json",
+                            temperature=0.1,
+                        ),
+                    )
                 response = _model_cache[model_name].generate_content(prompt)
 
                 content = response.text.strip()
-                
-                # Robust JSON extraction: search for the first { and last }
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    content = json_match.group(0)
-                
+
                 try:
                     data = json.loads(content)
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to decode JSON from {model_name}: {content[:100]}")
-                    continue
+                    # Fallback: try to extract JSON object from response
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        try:
+                            data = json.loads(json_match.group(0))
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to decode JSON from {model_name}: {content[:100]}")
+                            continue
+                    else:
+                        logger.warning(f"No JSON in response from {model_name}: {content[:100]}")
+                        continue
 
-                # Validate the parsed data before returning
                 # LLM returned null → it decided this is not an expense
                 if data is None:
                     return {"status": "not_expense"}
@@ -404,90 +396,100 @@ Now extract from: "{safe_text}"
     return {"status": "not_expense"}
 
 
+# Pre-built category mapping — O(1) lookup instead of O(n) scan
+_CATEGORY_MAP = {
+    # Food — English
+    'food': 'Food', 'pizza': 'Food', 'burger': 'Food', 'sushi': 'Food',
+    'restaurant': 'Food', 'coffee': 'Food', 'groceries': 'Food', 'snack': 'Food',
+    'lunch': 'Food', 'dinner': 'Food', 'breakfast': 'Food', 'meal': 'Food',
+    'supermarket': 'Food', 'cafe': 'Food', 'bakery': 'Food', 'delivery': 'Food',
+    'falafel': 'Food', 'shawarma': 'Food', 'hummus': 'Food',
+    # Food — Hebrew
+    'אוכל': 'Food', 'פיצה': 'Food', 'סופר': 'Food', 'מסעדה': 'Food',
+    'קפה': 'Food', 'ארוחה': 'Food', 'משלוח': 'Food', 'מאפייה': 'Food',
+    'פלאפל': 'Food', 'שווארמה': 'Food', 'חומוס': 'Food', 'מכולת': 'Food',
+    # Transport — English
+    'taxi': 'Transport', 'bus': 'Transport', 'train': 'Transport',
+    'fuel': 'Transport', 'gas': 'Transport', 'flight': 'Transport',
+    'uber': 'Transport', 'gett': 'Transport', 'parking': 'Transport',
+    'metro': 'Transport', 'car': 'Transport', 'toll': 'Transport',
+    # Transport — Hebrew
+    'מונית': 'Transport', 'אוטובוס': 'Transport', 'רכבת': 'Transport',
+    'דלק': 'Transport', 'חנייה': 'Transport', 'תחבורה': 'Transport',
+    'רכב': 'Transport', 'טיסה': 'Transport',
+    # Housing — English
+    'rent': 'Housing', 'electricity': 'Housing', 'water': 'Housing',
+    'bill': 'Housing', 'internet': 'Housing', 'utilities': 'Housing',
+    'maintenance': 'Housing', 'plumber': 'Housing',
+    # Housing — Hebrew
+    'שכירות': 'Housing', 'חשמל': 'Housing', 'מים': 'Housing',
+    'ארנונה': 'Housing', 'אינטרנט': 'Housing', 'ועד בית': 'Housing',
+    'שיפוץ': 'Housing', 'אינסטלטור': 'Housing',
+    # Entertainment — English
+    'movie': 'Entertainment', 'game': 'Entertainment', 'cinema': 'Entertainment',
+    'bar': 'Entertainment', 'netflix': 'Entertainment', 'spotify': 'Entertainment',
+    'concert': 'Entertainment', 'show': 'Entertainment', 'party': 'Entertainment',
+    'vacation': 'Entertainment', 'hotel': 'Entertainment', 'trip': 'Entertainment',
+    # Entertainment — Hebrew
+    'סרט': 'Entertainment', 'קולנוע': 'Entertainment', 'הופעה': 'Entertainment',
+    'בילוי': 'Entertainment', 'חופשה': 'Entertainment', 'מלון': 'Entertainment',
+    'משחק': 'Entertainment', 'פאב': 'Entertainment',
+    # Shopping — English
+    'clothes': 'Shopping', 'shoes': 'Shopping', 'shirt': 'Shopping',
+    'shopping': 'Shopping', 'amazon': 'Shopping', 'electronics': 'Shopping',
+    'phone': 'Shopping', 'laptop': 'Shopping', 'furniture': 'Shopping',
+    'gift': 'Shopping', 'online': 'Shopping',
+    # Shopping — Hebrew
+    'בגדים': 'Shopping', 'נעליים': 'Shopping', 'קניות': 'Shopping',
+    'אלקטרוניקה': 'Shopping', 'טלפון': 'Shopping', 'ריהוט': 'Shopping',
+    'מתנה': 'Shopping',
+    # Health — English
+    'gym': 'Health', 'doctor': 'Health', 'pharmacy': 'Health', 'meds': 'Health',
+    'dentist': 'Health', 'therapy': 'Health', 'hospital': 'Health',
+    'vitamins': 'Health', 'clinic': 'Health',
+    # Health — Hebrew
+    'רופא': 'Health', 'מרקחת': 'Health', 'בריאות': 'Health',
+    'חדר כושר': 'Health', 'שיניים': 'Health', 'תרופות': 'Health',
+    'קופת חולים': 'Health', 'בית חולים': 'Health',
+    # Education — English
+    'book': 'Education', 'course': 'Education', 'tuition': 'Education',
+    'school': 'Education', 'university': 'Education', 'class': 'Education',
+    'udemy': 'Education', 'tutorial': 'Education',
+    # Education — Hebrew
+    'ספר': 'Education', 'קורס': 'Education', 'לימודים': 'Education',
+    'אוניברסיטה': 'Education', 'שיעור': 'Education', 'מכללה': 'Education',
+    # Financial
+    'insurance': 'Financial', 'tax': 'Financial', 'bank': 'Financial',
+    'savings': 'Financial', 'investment': 'Financial', 'fee': 'Financial',
+    'loan': 'Financial', 'mortgage': 'Financial', 'debt': 'Financial',
+    # Financial — Hebrew
+    'ביטוח': 'Financial', 'מס': 'Financial', 'בנק': 'Financial',
+    'חיסכון': 'Financial', 'השקעה': 'Financial', 'עמלה': 'Financial',
+    'הלוואה': 'Financial', 'משכנתא': 'Financial',
+}
+
+# Multi-word keys need substring matching — extract them for the fallback path
+_MULTIWORD_KEYS = {k: v for k, v in _CATEGORY_MAP.items() if ' ' in k}
+
+
 def _map_category(text):
-    """Maps a raw text keyword to a clean category string."""
-    text = text.lower()
+    """Maps a raw text keyword to a clean category string. O(1) for single-word matches."""
+    text_lower = text.lower()
 
-    mapping = {
-        # Food — English
-        'food': 'Food', 'pizza': 'Food', 'burger': 'Food', 'sushi': 'Food',
-        'restaurant': 'Food', 'coffee': 'Food', 'groceries': 'Food', 'snack': 'Food',
-        'lunch': 'Food', 'dinner': 'Food', 'breakfast': 'Food', 'meal': 'Food',
-        'supermarket': 'Food', 'cafe': 'Food', 'bakery': 'Food', 'delivery': 'Food',
-        'falafel': 'Food', 'shawarma': 'Food', 'hummus': 'Food',
-        # Food — Hebrew
-        'אוכל': 'Food', 'פיצה': 'Food', 'סופר': 'Food', 'מסעדה': 'Food',
-        'קפה': 'Food', 'ארוחה': 'Food', 'משלוח': 'Food', 'מאפייה': 'Food',
-        'פלאפל': 'Food', 'שווארמה': 'Food', 'חומוס': 'Food', 'מכולת': 'Food',
+    # Fast path: direct lookup
+    result = _CATEGORY_MAP.get(text_lower)
+    if result:
+        return result
 
-        # Transport — English
-        'taxi': 'Transport', 'bus': 'Transport', 'train': 'Transport',
-        'fuel': 'Transport', 'gas': 'Transport', 'flight': 'Transport',
-        'uber': 'Transport', 'gett': 'Transport', 'parking': 'Transport',
-        'metro': 'Transport', 'car': 'Transport', 'toll': 'Transport',
-        # Transport — Hebrew
-        'מונית': 'Transport', 'אוטובוס': 'Transport', 'רכבת': 'Transport',
-        'דלק': 'Transport', 'חנייה': 'Transport', 'תחבורה': 'Transport',
-        'רכב': 'Transport', 'טיסה': 'Transport',
+    # Check individual words
+    for word in text_lower.split():
+        result = _CATEGORY_MAP.get(word)
+        if result:
+            return result
 
-        # Housing — English
-        'rent': 'Housing', 'electricity': 'Housing', 'water': 'Housing',
-        'bill': 'Housing', 'internet': 'Housing', 'utilities': 'Housing',
-        'maintenance': 'Housing', 'plumber': 'Housing',
-        # Housing — Hebrew
-        'שכירות': 'Housing', 'חשמל': 'Housing', 'מים': 'Housing',
-        'ארנונה': 'Housing', 'אינטרנט': 'Housing', 'ועד בית': 'Housing',
-        'שיפוץ': 'Housing', 'אינסטלטור': 'Housing',
-
-        # Entertainment — English
-        'movie': 'Entertainment', 'game': 'Entertainment', 'cinema': 'Entertainment',
-        'bar': 'Entertainment', 'netflix': 'Entertainment', 'spotify': 'Entertainment',
-        'concert': 'Entertainment', 'show': 'Entertainment', 'party': 'Entertainment',
-        'vacation': 'Entertainment', 'hotel': 'Entertainment', 'trip': 'Entertainment',
-        # Entertainment — Hebrew
-        'סרט': 'Entertainment', 'קולנוע': 'Entertainment', 'הופעה': 'Entertainment',
-        'בילוי': 'Entertainment', 'חופשה': 'Entertainment', 'מלון': 'Entertainment',
-        'משחק': 'Entertainment', 'פאב': 'Entertainment',
-
-        # Shopping — English
-        'clothes': 'Shopping', 'shoes': 'Shopping', 'shirt': 'Shopping',
-        'shopping': 'Shopping', 'amazon': 'Shopping', 'electronics': 'Shopping',
-        'phone': 'Shopping', 'laptop': 'Shopping', 'furniture': 'Shopping',
-        'gift': 'Shopping', 'online': 'Shopping',
-        # Shopping — Hebrew
-        'בגדים': 'Shopping', 'נעליים': 'Shopping', 'קניות': 'Shopping',
-        'אלקטרוניקה': 'Shopping', 'טלפון': 'Shopping', 'ריהוט': 'Shopping',
-        'מתנה': 'Shopping',
-
-        # Health — English
-        'gym': 'Health', 'doctor': 'Health', 'pharmacy': 'Health', 'meds': 'Health',
-        'dentist': 'Health', 'therapy': 'Health', 'hospital': 'Health',
-        'vitamins': 'Health', 'clinic': 'Health',
-        # Health — Hebrew
-        'רופא': 'Health', 'מרקחת': 'Health', 'בריאות': 'Health',
-        'חדר כושר': 'Health', 'שיניים': 'Health', 'תרופות': 'Health',
-        'קופת חולים': 'Health', 'בית חולים': 'Health',
-
-        # Education — English
-        'book': 'Education', 'course': 'Education', 'tuition': 'Education',
-        'school': 'Education', 'university': 'Education', 'class': 'Education',
-        'udemy': 'Education', 'tutorial': 'Education',
-        # Education — Hebrew
-        'ספר': 'Education', 'קורס': 'Education', 'לימודים': 'Education',
-        'אוניברסיטה': 'Education', 'שיעור': 'Education', 'מכללה': 'Education',
-
-        # Financial
-        'insurance': 'Financial', 'tax': 'Financial', 'bank': 'Financial',
-        'savings': 'Financial', 'investment': 'Financial', 'fee': 'Financial',
-        'loan': 'Financial', 'mortgage': 'Financial', 'debt': 'Financial',
-        # Financial — Hebrew
-        'ביטוח': 'Financial', 'מס': 'Financial', 'בנק': 'Financial',
-        'חיסכון': 'Financial', 'השקעה': 'Financial', 'עמלה': 'Financial',
-        'הלוואה': 'Financial', 'משכנתא': 'Financial',
-    }
-
-    for key, value in mapping.items():
-        if key in text:
+    # Slow path: multi-word substring check (e.g. 'חדר כושר', 'ועד בית')
+    for key, value in _MULTIWORD_KEYS.items():
+        if key in text_lower:
             return value
 
     return 'Other'

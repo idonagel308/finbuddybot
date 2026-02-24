@@ -1,5 +1,7 @@
 import sqlite3
+import math
 import logging
+import threading
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -20,16 +22,22 @@ ALLOWED_CATEGORIES = {
 
 @contextmanager
 def get_connection():
-    """Context manager for safe database connections."""
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_NAME, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for concurrency
-        conn.execute("PRAGMA foreign_keys=ON")
-        yield conn
-    finally:
-        if conn:
-            conn.close()
+    """Context manager for safe database connections. Reuses a thread-local connection."""
+    if not hasattr(_local, 'conn') or _local.conn is None:
+        _local.conn = sqlite3.connect(DB_NAME, timeout=10)
+        _local.conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn.execute("PRAGMA foreign_keys=ON")
+    yield _local.conn
+
+
+def close_connection():
+    """Closes the thread-local database connection if it exists. Used for testing/cleanup."""
+    if hasattr(_local, 'conn') and _local.conn is not None:
+        _local.conn.close()
+        _local.conn = None
+
+
+_local = threading.local()
 
 
 def init_db():
@@ -55,6 +63,12 @@ def init_db():
                 ON expenses(user_id, date)
             ''')
 
+            # Create index for category filtering
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_expenses_user_category 
+                ON expenses(user_id, category)
+            ''')
+
             # Budget table (one row per user)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS budgets (
@@ -63,14 +77,32 @@ def init_db():
                 )
             ''')
 
-            # Profiles table (age and monthly wage)
+            # Profiles table (age, yearly_income, currency, additional_info)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS profiles (
                     user_id INTEGER PRIMARY KEY,
                     age INTEGER,
-                    wage REAL
+                    yearly_income REAL,
+                    currency TEXT DEFAULT 'NIS',
+                    additional_info TEXT
                 )
             ''')
+
+            # Attempt to migrate old 'wage' column if it exists (sqlite doesn't support DROP COLUMN easily, so we just ADD new columns)
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN yearly_income REAL")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+                
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN currency TEXT DEFAULT 'NIS'")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+                
+            try:
+                cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
             conn.commit()
             logger.info("Database initialized and tables checked.")
@@ -85,7 +117,6 @@ def _validate_expense(amount: float, category: str, description: str = ""):
     if amount > MAX_AMOUNT:
         raise ValueError(f"Amount exceeds maximum allowed ({MAX_AMOUNT})")
     # Guard against NaN/infinity
-    import math
     if math.isnan(amount) or math.isinf(amount):
         raise ValueError("Amount cannot be NaN or infinity")
     if category not in ALLOWED_CATEGORIES:
@@ -379,19 +410,22 @@ def get_budget(user_id: int) -> float | None:
         return None
 
 
-def set_profile(user_id: int, age: int, wage: float):
+def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'NIS', additional_info: str = ""):
     """Sets or updates the user profile."""
     _validate_user_id(user_id)
     if not isinstance(age, int) or not (13 <= age <= 120):
         raise ValueError(f"Age must be between 13 and 120, got: {age}")
-    if not isinstance(wage, (int, float)) or wage <= 0 or wage > MAX_AMOUNT:
-        raise ValueError(f"Wage must be between 1 and {MAX_AMOUNT}")
+    if not isinstance(yearly_income, (int, float)) or yearly_income < 0 or yearly_income > (MAX_AMOUNT * 12):
+        raise ValueError(f"Yearly income must be between 0 and {MAX_AMOUNT * 12}")
+    if additional_info and len(additional_info) > 1000:
+        raise ValueError("Additional info is too long (max 1000 characters)")
+
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'INSERT OR REPLACE INTO profiles (user_id, age, wage) VALUES (?, ?, ?)',
-                (user_id, age, wage)
+                'INSERT OR REPLACE INTO profiles (user_id, age, yearly_income, currency, additional_info) VALUES (?, ?, ?, ?, ?)',
+                (user_id, age, yearly_income, currency, additional_info)
             )
             conn.commit()
     except sqlite3.Error as e:
@@ -404,10 +438,16 @@ def get_profile(user_id: int) -> dict | None:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT age, wage FROM profiles WHERE user_id = ?', (user_id,))
+            # Fetch explicitly requesting the new columns
+            cursor.execute('SELECT age, yearly_income, currency, additional_info FROM profiles WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()
             if row:
-                return {'age': row[0], 'wage': row[1]}
+                return {
+                    'age': row[0], 
+                    'yearly_income': row[1] or 0.0,
+                    'currency': row[2] or 'NIS',
+                    'additional_info': row[3] or ""
+                }
             return None
     except sqlite3.Error as e:
         logger.error(f"Error fetching profile: {e}")
@@ -434,10 +474,10 @@ def delete_monthly_expenses(user_id: int) -> int:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            current_month = datetime.now().strftime('%Y-%m')
+            start, end = _month_range()
             cursor.execute(
-                'DELETE FROM expenses WHERE user_id = ? AND date LIKE ?',
-                (user_id, f'{current_month}%')
+                'DELETE FROM expenses WHERE user_id = ? AND date >= ? AND date < ?',
+                (user_id, start, end)
             )
             conn.commit()
             count = cursor.rowcount
