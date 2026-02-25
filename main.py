@@ -16,26 +16,51 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from typing import List
+from contextlib import asynccontextmanager
+from telegram import Update
+import asyncio
 
 import database as db
-import sheets_etl
+import bot
 from models import ExpenseModel, ExpenseResponse
 from security import verify_api_key, rate_limit_check
 
 load_dotenv()
 
-# ── Logging ──
+# ── Logging & Uptime ──
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ── App ──
 _start_time = time.time()
+
+# ── Lifespan & Bot ──
+telegram_app = bot.get_application()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handles startup and shutdown events."""
+    db.init_db()
+    
+    # Cloud-Native Persistence: Sync from Sheets if local DB is empty or on fresh start
+    # We do this in a thread because gspread is blocking
+    await asyncio.to_thread(db.sync_from_sheets)
+    
+    if telegram_app:
+        await telegram_app.initialize()
+        await telegram_app.start()
+        logger.info("FinTechBot Webhook Engine Initialized and Started.")
+    yield
+    if telegram_app:
+        await telegram_app.stop()
+        await telegram_app.shutdown()
+
 
 app = FastAPI(
     title="FinTechBot API",
-    docs_url=None,    # Disabled in production; set to "/docs" for dev
+    docs_url=None,
     redoc_url=None,
+    lifespan=lifespan
 )
 
 
@@ -43,6 +68,8 @@ app = FastAPI(
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch-all: never leak stack traces to clients."""
+    import traceback
+    traceback.print_exc()
     logger.error(f"Unhandled API error on {request.method} {request.url.path}: {type(exc).__name__}: {exc}")
     return JSONResponse(
         status_code=500,
@@ -81,7 +108,24 @@ def _validate_user_id(user_id: int):
 async def health_check():
     """Health check with uptime."""
     uptime = int(time.time() - _start_time)
-    return {"status": "ok", "uptime_seconds": uptime}
+    return {"status": "ok", "uptime_seconds": uptime, "engine": "webhook"}
+
+
+@app.post("/webhook/{token}")
+async def telegram_webhook(token: str, request: Request):
+    """Ingest Telegram updates via Webhook."""
+    if token != os.getenv("TELEGRAM_BOT_TOKEN"):
+        logger.warning("Unauthorized webhook access attempt.")
+        raise HTTPException(status_code=403, detail="Forbidden")
+    
+    try:
+        data = await request.json()
+        update = Update.de_json(data, telegram_app.bot)
+        await telegram_app.process_update(update)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Error processing telegram update: {e}")
+        return JSONResponse(status_code=500, content={"detail": "Error processing update"})
 
 
 @app.get(
@@ -109,33 +153,24 @@ async def get_expenses(user_id: int, limit: int = 20):
     return expenses
 
 
+# --- Pydantic Schema overriding models.py for Strict Validation ---
+class InboundExpenseModel(BaseModel):
+    user_id: int = Field(gt=0, lt=10**15)
+    amount: float = Field(gt=0, le=db.MAX_AMOUNT)
+    category: str = Field(min_length=1, max_length=50)
+    description: str = Field(default="", max_length=db.MAX_DESCRIPTION_LENGTH)
+
 @app.post(
     "/expenses",
     dependencies=[Depends(verify_api_key), Depends(rate_limit_check)],
 )
-async def add_expense(expense: ExpenseModel, background_tasks: BackgroundTasks):
+async def add_expense(expense: InboundExpenseModel, background_tasks: BackgroundTasks):
     """Add a new expense."""
     try:
         db.add_expense(
             expense.user_id, expense.amount,
             expense.category, expense.description
         )
-        
-        # Get the ID of the newly added expense
-        expense_id = db.get_last_expense_id(expense.user_id)
-        
-        # Create dictionary for the ETL process
-        expense_dict = {
-            "id": expense_id,
-            "user_id": expense.user_id,
-            "date": datetime.now().strftime("%Y-%m-%d"),
-            "amount": expense.amount,
-            "category": expense.category,
-            "description": expense.description
-        }
-        
-        # Enqueue the Google Sheets sync as a background task
-        background_tasks.add_task(sheets_etl.append_expense_to_sheet, expense_dict)
         
         return {"status": "success", "message": "Expense added"}
     except ValueError as e:

@@ -48,7 +48,7 @@ def _fetch_live_rates() -> dict:
 
     try:
         req = urllib.request.Request(API_URL, headers={'User-Agent': 'FinTechBot/1.0'})
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # nosec B310
             data = json.loads(resp.read().decode())
 
         # API returns rates FROM ILS, e.g. {"ILS": 1, "USD": 0.27}

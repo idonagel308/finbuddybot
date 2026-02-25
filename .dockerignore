@@ -1,0 +1,49 @@
+# .dockerignore — Cloud Build Security Policy
+# This file prevents sensitive local data from being uploaded to Google Cloud during deployment.
+
+# ── Block Environment & Credentials ──
+.env
+.env.yaml
+GOOGLE_APPLICATION_CREDENTIALS
+# Explicitly block JSON keys to prevent identity leakage (Cloud Run uses ADC anyway)
+*.json
+!requirements.json  # Example: keep if you have non-secret JSON
+
+# ── Block Local Databases (Persistent Data) ──
+*.db
+*.sqlite
+*.sqlite3
+fintech.db
+.db/
+
+# ── Block Python Environment & Cache ──
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Block IDEs & System Metadata ──
+.vscode/
+.idea/
+.DS_Store
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+
+# ── Block Agent Workspace ──
+.agent/
+.gemini/
+
+# ── Block Development Scripts ──
+tests/
+scripts/
+test_webhook.py
+verify_recovery.py
+pre_cloud_final_check.py
+final_security_audit.py
+test_suite_results.txt
+GoogleCloudSDKInstaller.exe

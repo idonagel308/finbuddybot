@@ -93,15 +93,15 @@ def test_intent_detection():
         result = _classify_intent(text)
         _test(f"EXPENSE: '{text}' ({desc})", result == 'expense', f"got '{result}'")
 
-    # Should be AMBIGUOUS (has number but no clear signal)
+    # Should be AMBIGUOUS or NOT expense (Optimized filtering)
     ambiguous_cases = [
-        ("I'm 25 years old", "Age statement"),
-        ("my room is 302", "Room number"),
-        ("123456", "Just a number"),
+        ("I'm 25 years old", "Age statement", "ambiguous"),
+        ("my room is 302", "Room number", "ambiguous"),
+        ("123456", "Just a number", "ambiguous"),
     ]
-    for text, desc in ambiguous_cases:
+    for text, desc, expected in ambiguous_cases:
         result = _classify_intent(text)
-        _test(f"AMBIGUOUS: '{text}' ({desc})", result == 'ambiguous', f"got '{result}'")
+        _test(f"AMBIGUOUS/NOT: '{text}' ({desc})", result == expected, f"got '{result}'")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -218,98 +218,127 @@ def test_category_mapping():
 def test_database():
     _section("5. Database Operations")
 
-    # Clean test DB
-    if os.path.exists(TEST_DB):
-        os.remove(TEST_DB)
+    from unittest.mock import patch
+    with patch.object(db.sheets_etl, 'append_expense'), patch.object(db.sheets_etl, 'delete_expense'):
+        # Clean test DB
+        if os.path.exists(TEST_DB):
+            os.remove(TEST_DB)
 
-    db.init_db()
-    _test("Database initialized", os.path.exists(TEST_DB))
+        db.init_db()
+        _test("Database initialized", os.path.exists(TEST_DB))
 
-    # Add expense
-    TEST_USER = 99999
-    db.add_expense(TEST_USER, 50.0, "Food", "test pizza")
-    _test("Expense added", True)
+        # Add expense
+        TEST_USER = 99999
+        db.add_expense(TEST_USER, 50.0, "Food", "test pizza")
+        _test("Expense added", True)
 
-    # Retrieve expense
-    expenses = db.get_recent_expenses(user_id=TEST_USER, limit=10)
-    _test("Expense retrieved", len(expenses) >= 1)
-    _test("Amount correct", expenses[0][2] == 50.0)
-    _test("Category correct", expenses[0][3] == "Food")
+        # Retrieve expense
+        expenses = db.get_recent_expenses(user_id=TEST_USER, limit=10)
+        _test("Expense retrieved", len(expenses) >= 1)
+        _test("Amount correct", expenses[0][2] == 50.0)
+        _test("Category correct", expenses[0][3] == "Food")
 
-    # Monthly summary
-    total = db.get_monthly_summary(TEST_USER)
-    _test("Monthly summary correct", total >= 50.0)
+        # Monthly summary
+        total = db.get_monthly_summary(TEST_USER)
+        _test("Monthly summary correct", total >= 50.0)
 
-    # Category totals
-    totals = db.get_category_totals(TEST_USER)
-    _test("Category totals has Food", "Food" in totals)
-    _test("Food total is 50", totals.get("Food", 0) == 50.0)
+        # Category totals
+        totals = db.get_category_totals(TEST_USER)
+        _test("Category totals has Food", "Food" in totals)
+        _test("Food total is 50", totals.get("Food", 0) == 50.0)
 
-    # Validation — invalid amount
-    try:
-        db.add_expense(TEST_USER, -100, "Food", "negative")
-        _test("Negative amount rejected", False, "should have raised ValueError")
-    except ValueError:
-        _test("Negative amount rejected", True)
+        # Validation — invalid amount
+        try:
+            db.add_expense(TEST_USER, -100, "Food", "negative")
+            _test("Negative amount rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Negative amount rejected", True)
 
-    # Validation — invalid category
-    try:
-        db.add_expense(TEST_USER, 50, "InvalidCat", "bad category")
-        _test("Invalid category rejected", False, "should have raised ValueError")
-    except ValueError:
-        _test("Invalid category rejected", True)
+        # Validation — invalid category
+        try:
+            db.add_expense(TEST_USER, 50, "InvalidCat", "bad category")
+            _test("Invalid category rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Invalid category rejected", True)
 
-    # Validation — huge amount
-    try:
-        db.add_expense(TEST_USER, 2_000_000, "Food", "too much")
-        _test("Huge amount rejected", False, "should have raised ValueError")
-    except ValueError:
-        _test("Huge amount rejected", True)
+        # Validation — huge amount
+        try:
+            db.add_expense(TEST_USER, 2_000_000, "Food", "too much")
+            _test("Huge amount rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Huge amount rejected", True)
 
-    # NaN amount
-    try:
-        db.add_expense(TEST_USER, float('nan'), "Food", "nan test")
-        _test("NaN amount rejected by DB", False, "should have raised ValueError")
-    except ValueError:
-        _test("NaN amount rejected by DB", True)
+        # NaN amount
+        try:
+            db.add_expense(TEST_USER, float('nan'), "Food", "nan test")
+            _test("NaN amount rejected by DB", False, "should have raised ValueError")
+        except ValueError:
+            _test("NaN amount rejected by DB", True)
 
-    # Invalid user_id
-    try:
-        db.add_expense(-1, 50, "Food", "negative user")
-        _test("Negative user_id rejected", False, "should have raised ValueError")
-    except ValueError:
-        _test("Negative user_id rejected", True)
+        # Invalid user_id
+        try:
+            db.add_expense(-1, 50, "Food", "negative user")
+            _test("Negative user_id rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Negative user_id rejected", True)
 
-    # Profile validation
-    try:
-        db.set_profile(TEST_USER, 5, 120000, 'NIS', 'info')  # age too young
-        _test("Profile: age=5 rejected", False, "should have raised ValueError")
-    except ValueError:
-        _test("Profile: age=5 rejected", True)
+        # Profile validation
+        try:
+            db.set_profile(TEST_USER, 5, 120000, 'NIS', 'info')  # age too young
+            _test("Profile: age=5 rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Profile: age=5 rejected", True)
 
-    try:
-        db.set_profile(TEST_USER, 25, -100, 'NIS', 'info')  # negative income
-        _test("Profile: negative income rejected", False, "should have raised ValueError")
-    except ValueError:
-        _test("Profile: negative income rejected", True)
+        try:
+            db.set_profile(TEST_USER, 25, -100, 'NIS', 'info')  # negative income
+            _test("Profile: negative income rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Profile: negative income rejected", True)
+
+        try:
+            long_info = "A" * 1500
+            db.set_profile(TEST_USER, 25, 50000, 'NIS', long_info)  # max 1000 length chars
+            _test("Profile: too long info rejected", False, "should have raised ValueError")
+        except ValueError:
+            _test("Profile: too long info rejected", True)
+
+        # Successful profile
+        db.set_profile(TEST_USER, 25, 120000, 'NIS', 'Aggressively saving')
+        _test("Valid profile set successfully", True)
+        prof = db.get_profile(TEST_USER)
+        _test("Profile retrieved", prof and prof['age'] == 25)
+        _test("Profile income correct", prof and prof['yearly_income'] == 120000.0)
+
+        # Delete expense
+        exp_id = expenses[0][0]
+        db.delete_expense(TEST_USER, exp_id)
+        _test("Expense deleted", True)
+        remaining = db.get_recent_expenses(user_id=TEST_USER)
+        _test("Expense removed from DB", len(remaining) == 0)
 
     # Valid profile
     db.set_profile(TEST_USER, 25, 120000, 'USD', 'Saving for a house')
     profile = db.get_profile(TEST_USER)
-    _test("Valid profile saved", profile is not None and profile['age'] == 25 and profile['currency'] == 'USD')
+    _test("Valid profile fully saved", 
+          profile is not None and 
+          profile['age'] == 25 and 
+          profile['yearly_income'] == 120000 and 
+          profile['currency'] == 'USD' and 
+          profile['additional_info'] == 'Saving for a house')
+
+    # Valid profile with defaults
+    db.set_profile(TEST_USER, 30, 80000)
+    profile2 = db.get_profile(TEST_USER)
+    _test("Valid profile defaults handled", 
+          profile2 is not None and 
+          profile2['currency'] == 'NIS' and 
+          profile2['additional_info'] == '')
 
     # Budget
     db.set_budget(TEST_USER, 1000.0)
     budget = db.get_budget(TEST_USER)
     _test("Budget set and retrieved", budget == 1000.0)
 
-    # Delete expense
-    last_id = db.get_last_expense_id(TEST_USER)
-    if last_id:
-        db.delete_expense(last_id, TEST_USER)
-        _test("Expense deleted", True)
-    else:
-        _test("Expense deleted", False, "no expense ID found")
 
     # Delete all expenses
     db.add_expense(TEST_USER, 10, "Other", "temp1")
@@ -481,10 +510,114 @@ def test_currency():
         print("  ⚠️  currency.py not found, skipping currency tests")
 
 
+
+# ══════════════════════════════════════════════════════════════
+# 11. FASTAPI ENDPOINTS
+# ══════════════════════════════════════════════════════════════
+def test_api():
+    _section("11. FastAPI Endpoints (main.py)")
+    
+    try:
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch
+        from main import app
+        import security
+        
+        # Force a test API key for the test run so we don't rely on local .env state
+        security.API_SECRET_KEY = "dummy_test_key_123"
+        
+        # Initialize test database for the API endpoints
+        db.init_db()
+
+        client = TestClient(app)
+        
+        # Test 1: Healthcheck
+        resp = client.get("/")
+        _test("API Health check", resp.status_code == 200 and "status" in resp.json())
+        
+        # Prepare headers
+        headers = {"X-API-Key": security.API_SECRET_KEY}
+        test_user = 12345
+        
+        # Test 2: Auth failure (wrong key)
+        bad_resp = client.get(f"/expenses/{test_user}", headers={"X-API-Key": "wrong_key"})
+        _test("API Auth rejected wrong key", bad_resp.status_code == 403)
+            
+        # Add expense via API (Mocking Sheets ETL so we don't hit real Google servers or crash on missing config)
+        with patch('sheets_etl.append_expense') as mock_append:
+            payload = {
+                "user_id": test_user,
+                "amount": 75.0,
+                "category": "Food",
+                "description": "API Test"
+            }
+            resp = client.post("/expenses", json=payload, headers=headers)
+        if resp.status_code != 200 or resp.json().get("status") != "success":
+            print(f"API POST Error: {resp.status_code} - {resp.text}")
+        _test("API POST /expenses", resp.status_code == 200 and resp.json().get("status") == "success")
+        
+        # Add massive DoS expense via API -- should be rejected (422 Unprocessable Entity)
+        dos_payload = {
+            "user_id": test_user,
+            "amount": 75.0,
+            "category": "Food",
+            "description": "A" * 5000  # Exceeds max length
+        }
+        dos_resp = client.post("/expenses", json=dos_payload, headers=headers)
+        _test("API POST rejects DoS string payloads (422)", dos_resp.status_code == 422)
+
+        # Get expenses
+        resp = client.get(f"/expenses/{test_user}", headers=headers)
+        if resp.status_code != 200 or len(resp.json()) == 0:
+            print(f"API GET Error: {resp.status_code} - {resp.text}")
+        _test("API GET /expenses", resp.status_code == 200 and len(resp.json()) > 0)
+        if resp.status_code == 200 and len(resp.json()) > 0:
+            exp_id = resp.json()[0]["id"]
+            
+            # Summary and chart
+            resp2 = client.get(f"/summary/{test_user}", headers=headers)
+            _test("API GET /summary", resp2.status_code == 200 and resp2.json().get("monthly_total") >= 75.0)
+            
+            resp3 = client.get(f"/chart/{test_user}", headers=headers)
+            _test("API GET /chart", resp3.status_code == 200 and "Food" in resp3.json())
+            
+            # Delete expense
+            resp4 = client.delete(f"/expenses/{test_user}/{exp_id}", headers=headers)
+            _test("API DELETE /expenses", resp4.status_code == 200)
+    except ImportError:
+        print("  ⚠️ fastapi/httpx not installed, skipping API tests")
+    except Exception as e:
+        _test(f"API Test Error: {e}", False)
+
+# ══════════════════════════════════════════════════════════════
+# 12. LLM INSIGHTS SIGNATURE
+# ══════════════════════════════════════════════════════════════
+def test_insights():
+    _section("12. LLM Insights Signature")
+    # Test that `generate_insights` handles all kwargs safely without raising errors
+    try:
+        test_totals = {"Food": 150.0, "Transport": 50.0, "Entertainment": 200.0}
+        recent = [(1, "2026-02-25 10:00:00", 50.0, "Food", "pizza")]
+        
+        res = llm_helper.generate_insights(
+            totals=test_totals,
+            age=25,
+            yearly_income=120000,
+            budget=500.0,
+            recent_expenses=recent,
+            currency="USD",
+            additional_info="Testing insights"
+        )
+        _test("Insights generation returns string properly", isinstance(res, str) and len(res) > 0)
+    except Exception as e:
+        _test(f"Insights generation failed: {e}", False)
+
+
 # ══════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding='utf-8')
     print("╔══════════════════════════════════════════════════════════╗")
     print("║          FinTechBot — Comprehensive Test Suite          ║")
     print("╚══════════════════════════════════════════════════════════╝")
@@ -499,6 +632,8 @@ if __name__ == "__main__":
     test_category_consistency()
     test_message_safety()
     test_currency()
+    test_api()
+    test_insights()
 
     print(f"\n{'='*60}")
     print(f"  RESULTS: {_passed}/{_total} passed, {_failed} failed")

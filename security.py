@@ -63,7 +63,13 @@ async def rate_limit_check(request: Request):
     Allows RATE_LIMIT_REQUESTS per RATE_LIMIT_WINDOW seconds per IP.
     Includes periodic cleanup to prevent memory leaks.
     """
-    client_ip = request.client.host if request.client else "unknown"
+    # Extract Real IP to prevent proxy starvation if deployed behind a Load Balancer
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    else:
+        client_ip = request.headers.get("x-real-ip", request.client.host if request.client else "unknown")
+
     now = time.time()
 
     # Clean old timestamps for this IP

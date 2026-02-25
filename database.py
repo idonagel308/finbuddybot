@@ -2,8 +2,11 @@ import sqlite3
 import math
 import logging
 import threading
+import os
 from datetime import datetime
 from contextlib import contextmanager
+
+import sheets_etl
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,7 +25,7 @@ ALLOWED_CATEGORIES = {
 
 @contextmanager
 def get_connection():
-    """Context manager for safe database connections. Reuses a thread-local connection."""
+    """Context manager for safe database connections. Uses SQLite (Hot Cache)."""
     if not hasattr(_local, 'conn') or _local.conn is None:
         _local.conn = sqlite3.connect(DB_NAME, timeout=10)
         _local.conn.execute("PRAGMA journal_mode=WAL")
@@ -41,15 +44,16 @@ _local = threading.local()
 
 
 def init_db():
-    """Initializes the database by creating the expenses table if it doesn't exist."""
+    """Initializes the SQLite database. Dialect-agnostic hooks removed (reverting to pure SQLite)."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
 
+            # 1. Expenses Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS expenses (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
+                    user_id BIGINT NOT NULL,
                     date TEXT NOT NULL,
                     amount REAL NOT NULL CHECK(amount > 0),
                     category TEXT NOT NULL,
@@ -57,30 +61,22 @@ def init_db():
                 )
             ''')
 
-            # Create index for faster user queries
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_expenses_user_date 
-                ON expenses(user_id, date)
-            ''')
+            # 2. Indexes
+            cursor.execute('''CREATE INDEX IF NOT EXISTS idx_expenses_user_date ON expenses(user_id, date)''')
+            cursor.execute('''CREATE INDEX IF NOT EXISTS idx_expenses_user_category ON expenses(user_id, category)''')
 
-            # Create index for category filtering
-            cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_expenses_user_category 
-                ON expenses(user_id, category)
-            ''')
-
-            # Budget table (one row per user)
+            # 3. Budgets Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS budgets (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id BIGINT PRIMARY KEY,
                     amount REAL NOT NULL CHECK(amount > 0)
                 )
             ''')
 
-            # Profiles table (age, yearly_income, currency, additional_info)
+            # 4. Profiles Table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS profiles (
-                    user_id INTEGER PRIMARY KEY,
+                    user_id BIGINT PRIMARY KEY,
                     age INTEGER,
                     yearly_income REAL,
                     currency TEXT DEFAULT 'NIS',
@@ -88,25 +84,17 @@ def init_db():
                 )
             ''')
 
-            # Attempt to migrate old 'wage' column if it exists (sqlite doesn't support DROP COLUMN easily, so we just ADD new columns)
-            try:
-                cursor.execute("ALTER TABLE profiles ADD COLUMN yearly_income REAL")
-            except sqlite3.OperationalError:
-                pass  # column already exists
-                
-            try:
-                cursor.execute("ALTER TABLE profiles ADD COLUMN currency TEXT DEFAULT 'NIS'")
-            except sqlite3.OperationalError:
-                pass  # column already exists
-                
-            try:
-                cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already exists
+            # Local Migration helpers
+            try: cursor.execute("ALTER TABLE profiles ADD COLUMN yearly_income REAL")
+            except: pass
+            try: cursor.execute("ALTER TABLE profiles ADD COLUMN currency TEXT DEFAULT 'NIS'")
+            except: pass
+            try: cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
+            except: pass
 
             conn.commit()
-            logger.info("Database initialized and tables checked.")
-    except sqlite3.Error as e:
+            logger.info("Database initialized (SQLite Cache).")
+    except Exception as e:
         logger.error(f"Error initializing database: {e}")
 
 
@@ -132,77 +120,49 @@ def _validate_user_id(user_id):
 
 
 def add_expense(user_id: int, amount: float, category: str, description: str = ""):
-    """
-    Adds a new expense to the database.
-
-    Args:
-        user_id (int): The user ID.
-        amount (float): The cost of the expense (must be positive).
-        category (str): The category (must be from ALLOWED_CATEGORIES).
-        description (str): Optional details about the expense.
-
-    Raises:
-        ValueError: If input validation fails.
-    """
-    # Validate inputs
+    """Adds a new expense to SQLite and mirrors to Google Sheets."""
     _validate_user_id(user_id)
     _validate_expense(amount, category, description)
-
-    # Sanitize description
     if description:
         description = description[:MAX_DESCRIPTION_LENGTH].strip()
 
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-
             date_str = datetime.now().isoformat()
-
             cursor.execute('''
                 INSERT INTO expenses (user_id, date, amount, category, description)
                 VALUES (?, ?, ?, ?, ?)
             ''', (user_id, date_str, amount, category, description))
-
+            
+            inserted_id = cursor.lastrowid
             conn.commit()
-            logger.info(f"Added expense for user {user_id}: category={category}")
-    except sqlite3.Error as e:
+            
+            # Mirror to Sheets
+            sheets_etl.append_expense(inserted_id, user_id, date_str, amount, category, description)
+            
+            logger.info(f"Added expense {inserted_id} for user {user_id}")
+            return inserted_id
+    except Exception as e:
         logger.error(f"Error adding expense: {e}")
         raise
 
-
 def get_recent_expenses(user_id: int = None, limit: int = 5):
-    """
-    Retrieves the most recent expenses.
-
-    Args:
-        user_id (int, optional): Filter by user ID. If None, returns all.
-        limit (int): Number of expenses to retrieve (max 50).
-
-    Returns:
-        list: A list of tuples containing expense records.
-    """
-    # Cap limit to prevent abuse
+    """Retrieves most recent expenses from SQLite cache."""
     limit = min(max(1, limit), 50)
-
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-
             query = "SELECT id, date, amount, category, description FROM expenses"
             params = []
-
-            if user_id is not None:  # Fixed: was `if user_id` which fails for user_id=0
+            if user_id is not None:
                 query += " WHERE user_id = ?"
                 params.append(user_id)
-
             query += " ORDER BY date DESC LIMIT ?"
             params.append(limit)
-
             cursor.execute(query, tuple(params))
-
-            rows = cursor.fetchall()
-            return rows
-    except sqlite3.Error as e:
+            return cursor.fetchall()
+    except Exception as e:
         logger.error(f"Error fetching expenses: {e}")
         return []
 
@@ -227,37 +187,28 @@ def _month_range(year: int = None, month: int = None):
 
 
 def get_monthly_summary(user_id: int, year: int = None, month: int = None):
-    """
-    Calculates total expenses for a specific month (defaults to current month).
-    Filters strictly by the transaction date.
-    """
+    """Calculates total expenses for a month from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             start, end = _month_range(year, month)
-
             cursor.execute('''
                 SELECT SUM(amount) 
                 FROM expenses 
                 WHERE user_id = ? AND date >= ? AND date < ?
             ''', (user_id, start, end))
-
             result = cursor.fetchone()
-            return result[0] if result[0] else 0.0
-    except sqlite3.Error as e:
+            return result[0] if result and result[0] else 0.0
+    except Exception as e:
         logger.error(f"Error fetching summary: {e}")
         return 0.0
 
 
 def get_yearly_month_totals(user_id: int, year: int = None) -> dict:
-    """
-    Returns a dict of {month_number: total_amount} for each month that has expenses in the given year.
-    Defaults to current year.
-    """
+    """Returns monthly totals for a year from cache."""
     _validate_user_id(user_id)
-    if year is None:
-        year = datetime.now().year
-
+    if year is None: year = datetime.now().year
+    
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -276,55 +227,43 @@ def get_yearly_month_totals(user_id: int, year: int = None) -> dict:
 
 
 def get_monthly_expenses(user_id: int, year: int = None, month: int = None):
-    """
-    Retrieves all expenses for a specific month (defaults to current month).
-    Only includes transactions whose date falls within the given month.
-    """
+    """Retrieves monthly expenses from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             start, end = _month_range(year, month)
-
             cursor.execute('''
                 SELECT id, date, amount, category, description 
                 FROM expenses 
                 WHERE user_id = ? AND date >= ? AND date < ?
                 ORDER BY date DESC
             ''', (user_id, start, end))
-
-            rows = cursor.fetchall()
-            return rows
-    except sqlite3.Error as e:
+            return cursor.fetchall()
+    except Exception as e:
         logger.error(f"Error fetching monthly expenses: {e}")
         return []
 
 
 def get_category_totals(user_id: int, year: int = None, month: int = None):
-    """
-    Returns a dictionary of {category: total_amount} for a specific month.
-    Defaults to the current month. Filters by transaction date range.
-    """
+    """Returns category totals from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             start, end = _month_range(year, month)
-
             cursor.execute('''
                 SELECT category, SUM(amount) 
                 FROM expenses 
                 WHERE user_id = ? AND date >= ? AND date < ?
                 GROUP BY category
             ''', (user_id, start, end))
-
-            rows = cursor.fetchall()
-            return {row[0]: row[1] for row in rows}
-    except sqlite3.Error as e:
+            return {row[0]: row[1] for row in cursor.fetchall()}
+    except Exception as e:
         logger.error(f"Error fetching category totals: {e}")
         return {}
 
 
 def delete_expense(user_id: int, expense_id: int) -> bool:
-    """Deletes an expense only if it belongs to the given user."""
+    """Deletes an expense from SQLite and mirrors to Sheets."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -333,14 +272,20 @@ def delete_expense(user_id: int, expense_id: int) -> bool:
                 (expense_id, user_id)
             )
             conn.commit()
-            return cursor.rowcount > 0
-    except sqlite3.Error as e:
+            success = cursor.rowcount > 0
+            
+            if success:
+                # Mirror to Sheets
+                sheets_etl.delete_expense(expense_id)
+                
+            return success
+    except Exception as e:
         logger.error(f"Error deleting expense: {e}")
         return False
 
 
 def get_last_expense_id(user_id: int) -> int | None:
-    """Returns the ID of the most recent expense for a user."""
+    """Returns last ID from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -350,16 +295,14 @@ def get_last_expense_id(user_id: int) -> int | None:
             )
             row = cursor.fetchone()
             return row[0] if row else None
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Error fetching last expense: {e}")
         return None
 
 
 def export_expenses_csv(user_id: int) -> str:
-    """Returns all expenses for a user as a CSV string."""
-    import csv
-    import io
-
+    """Exports CSV from cache."""
+    import csv, io
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -368,124 +311,192 @@ def export_expenses_csv(user_id: int) -> str:
                 (user_id,)
             )
             rows = cursor.fetchall()
-
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(['Date', 'Amount', 'Category', 'Description'])
         for row in rows:
             writer.writerow([row[0][:10], row[1], row[2], row[3] or ''])
         return output.getvalue()
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Error exporting CSV: {e}")
         return ""
 
 
 def set_budget(user_id: int, amount: float):
-    """Sets or updates the monthly budget for a user."""
+    """Sets/updates budget in cache."""
     if amount <= 0 or amount > MAX_AMOUNT:
         raise ValueError(f"Budget must be between 0 and {MAX_AMOUNT}")
+
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                'INSERT OR REPLACE INTO budgets (user_id, amount) VALUES (?, ?)',
-                (user_id, amount)
-            )
+            cursor.execute('INSERT OR REPLACE INTO budgets (user_id, amount) VALUES (?, ?)', (user_id, amount))
             conn.commit()
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Error setting budget: {e}")
         raise
 
 
 def get_budget(user_id: int) -> float | None:
-    """Returns the budget for a user, or None if not set."""
+    """Returns budget from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('SELECT amount FROM budgets WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()
             return row[0] if row else None
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Error fetching budget: {e}")
         return None
 
 
 def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'NIS', additional_info: str = ""):
-    """Sets or updates the user profile."""
+    """Sets/updates profile in cache."""
     _validate_user_id(user_id)
     if not isinstance(age, int) or not (13 <= age <= 120):
         raise ValueError(f"Age must be between 13 and 120, got: {age}")
-    if not isinstance(yearly_income, (int, float)) or yearly_income < 0 or yearly_income > (MAX_AMOUNT * 12):
-        raise ValueError(f"Yearly income must be between 0 and {MAX_AMOUNT * 12}")
+    if not isinstance(yearly_income, (int, float)) or yearly_income < 0:
+        raise ValueError(f"Yearly income must be positive")
     if additional_info and len(additional_info) > 1000:
-        raise ValueError("Additional info is too long (max 1000 characters)")
-
+        raise ValueError(f"Additional info exceeds 1000 characters")
+    
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                'INSERT OR REPLACE INTO profiles (user_id, age, yearly_income, currency, additional_info) VALUES (?, ?, ?, ?, ?)',
-                (user_id, age, yearly_income, currency, additional_info)
-            )
+            cursor.execute('''
+                INSERT OR REPLACE INTO profiles (user_id, age, yearly_income, currency, additional_info) 
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, age, yearly_income, currency, additional_info))
             conn.commit()
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Error setting profile: {e}")
         raise
 
 
 def get_profile(user_id: int) -> dict | None:
-    """Returns the user profile as a dict."""
+    """Returns profile from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            # Fetch explicitly requesting the new columns
             cursor.execute('SELECT age, yearly_income, currency, additional_info FROM profiles WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()
             if row:
                 return {
-                    'age': row[0], 
-                    'yearly_income': row[1] or 0.0,
-                    'currency': row[2] or 'NIS',
-                    'additional_info': row[3] or ""
+                    'age': row[0], 'yearly_income': row[1] or 0.0,
+                    'currency': row[2] or 'NIS', 'additional_info': row[3] or ""
                 }
             return None
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Error fetching profile: {e}")
         return None
 
 
 def delete_all_expenses(user_id: int) -> int:
-    """Deletes ALL expenses for a given user. Returns the number of deleted rows."""
+    """Deletes ALL expenses (local only, user must wipe Sheets manually or we can batch delete)."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM expenses WHERE user_id = ?', (user_id,))
             conn.commit()
             count = cursor.rowcount
-            logger.info(f"Deleted {count} expenses for user {user_id}")
-            return count
-    except sqlite3.Error as e:
+            
+        if count > 0:
+            _sync_local_to_sheets_for_user(user_id)
+            
+        return count
+    except Exception as e:
         logger.error(f"Error deleting all expenses: {e}")
         return 0
 
 
 def delete_monthly_expenses(user_id: int) -> int:
-    """Deletes all expenses for the current month for a given user. Returns the number of deleted rows."""
+    """Deletes current month locally."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             start, end = _month_range()
-            cursor.execute(
-                'DELETE FROM expenses WHERE user_id = ? AND date >= ? AND date < ?',
-                (user_id, start, end)
-            )
+            cursor.execute('DELETE FROM expenses WHERE user_id = ? AND date >= ? AND date < ?', (user_id, start, end))
             conn.commit()
             count = cursor.rowcount
-            logger.info(f"Deleted {count} monthly expenses for user {user_id}")
-            return count
-    except sqlite3.Error as e:
+            
+        if count > 0:
+            _sync_local_to_sheets_for_user(user_id)
+            
+        return count
+    except Exception as e:
         logger.error(f"Error deleting monthly expenses: {e}")
         return 0
+
+def _sync_local_to_sheets_for_user(user_id: int):
+    """Pushes the current state of SQLite for a specific user to Google Sheets for mass updates."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, user_id, date, amount, category, description FROM expenses WHERE user_id = ? ORDER BY date ASC',
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            
+        # Format for gspread
+        formatted = []
+        for r in rows:
+            formatted.append([r[0], r[1], r[2], r[3], r[4], r[5] or ""])
+            
+        # Background thread so the Telegram UI doesn't hang
+        threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
+        logger.info(f"Triggered background wholesale sync for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to initiate wholesale sync: {e}")
+
+
+def sync_from_sheets():
+    """
+    Recovers the local SQLite cache from Google Sheets.
+    Senior Developer Note: This is an idempotent 'Cold Start' recovery logic.
+    It logs specific failures but allows the application to remain functional (even if data is stale).
+    """
+    logger.info("⚡ [STARTUP] Initiating Secure Sync from Google Sheets Source of Truth...")
+    
+    try:
+        rows = sheets_etl.fetch_all_data()
+    except Exception as e:
+        logger.error(f"❌ [CRITICAL] Failed to reach Google Sheets during startup: {e}")
+        logger.warning("⚠️ Application will start with existing local data (if any). Sync will retry on the next write.")
+        return
+
+    if not rows:
+        logger.info("ℹ️ [STARTUP] No historical data found in Google Sheets. Local cache remains empty.")
+        return
+
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Atomic transaction for recovery
+            cursor.execute("BEGIN TRANSACTION")
+            try:
+                # Clear existing local cache for specific user (or all if recovering fresh)
+                cursor.execute("DELETE FROM expenses")
+                
+                # Batch insert recovered rows
+                data_to_insert = [
+                    (r['id'], r['user_id'], r['date'], r['amount'], r['category'], r['description'])
+                    for r in rows
+                ]
+                cursor.executemany('''
+                    INSERT INTO expenses (id, user_id, date, amount, category, description)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', data_to_insert)
+                
+                conn.commit()
+                logger.info(f"✅ [SUCCESS] Hot-cache synchronized: {len(rows)} records restored from Sheets.")
+            except Exception as e:
+                cursor.execute("ROLLBACK")
+                logger.error(f"❌ [DB_ERROR] Failed to commit restored data to SQLite: {e}")
+                raise
+    except Exception as e:
+        logger.error(f"❌ [SYNC_FAIL] Database recovery failed: {e}")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import traceback
+from datetime import datetime
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend (no GUI needed)
 import matplotlib.pyplot as plt
@@ -12,7 +13,7 @@ from functools import wraps
 from collections import defaultdict
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler
 
 # Load environment variables from .env file
 load_dotenv()
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 # Suppress httpx logs that leak the bot token in URLs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# --- Onboarding / Settings States ---
+ASK_AGE, ASK_INCOME, ASK_CURRENCY, ASK_INFO = range(4)
+
 import database as db
 import llm_helper
 
@@ -35,6 +39,15 @@ MAX_MESSAGES_PER_MINUTE = 10
 MAX_MESSAGE_LENGTH = 500
 TELEGRAM_MAX_LENGTH = 4096  # Telegram's hard limit for a single message
 _user_message_timestamps = defaultdict(list)
+
+# Single-tenant security: Load allowed user ID
+ALLOWED_USER_ID = os.getenv('ALLOWED_USER_ID')
+if ALLOWED_USER_ID:
+    try:
+        ALLOWED_USER_ID = int(ALLOWED_USER_ID)
+    except ValueError:
+        logger.error(f"Invalid ALLOWED_USER_ID in .env: {ALLOWED_USER_ID}. Must be an integer.")
+        ALLOWED_USER_ID = None
 
 # Whitelist of valid callback data values
 VALID_CALLBACKS = {'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart', 'insights', 'delete_all_monthly', 'back_to_menu'}
@@ -206,15 +219,35 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown'):
 
 
 def _private_only(func):
-    """Decorator: only respond in private chats. Includes null guards."""
+    """
+    Decorator: only respond in private chats and check for ALLOWED_USER_ID if set.
+    Includes null guards.
+    """
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update or not update.effective_chat:
+        if not update:
             return
-        if update.effective_chat.type != 'private':
+        
+        # Determine user and chat from various update types
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        if not chat or not user:
             return
-        if not update.effective_user:
+
+        if chat.type != 'private':
             return
+        
+        # User ID validation (Single-Tenant Security)
+        if ALLOWED_USER_ID and user.id != ALLOWED_USER_ID:
+            logger.warning(f"Unauthorized access attempt by user {user.id}")
+            await _safe_send(
+                context.bot, 
+                chat.id, 
+                "⛔ *Access Denied*\n\nSorry, this is a private financial bot. You are not authorized to use it."
+            )
+            return
+
         return await func(update, context)
     return wrapper
 
@@ -226,7 +259,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
     await _safe_send(
         context.bot, update.effective_chat.id,
-        "👋 *Welcome to FinTechBot!* 🤖💰\n\nI can help you track your expenses and save money.\n\n📝 *Try it:* Send me an expense like:\n*\"Spent 50 shekels on pizza\"*\n*\"Taxi to work 40\"*\n\nThen use /menu to see your stats! 📊\nType /help for all commands."
+        "🏦 *Welcome to FinTechBot Premium.* �\n\nI am your Personal Wealth Manager and Financial Intelligence Engine. My role is to log your cash flow, uncover behavioral spending patterns, and optimize your wealth over time.\n\n📝 *To log a transaction, simply text me naturally:*\n  • _\"Spent ₪150 on an Uber\"_\n  • _\"500 for groceries\"_\n  • _\"שילמתי 80 שקל על קפה\"_\n\n📊 Use /menu at any time to access your Analytics Dashboard. Type /help to view all available commands."
     )
 
 
@@ -234,16 +267,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /help command."""
     text = (
-        "📖 *FinTechBot Commands:*\n\n"
-        "📝 *Track expenses* — just type naturally:\n"
-        "  _\"Spent 50 on pizza\"_\n"
-        "  _\"שילמתי 200 שקל על סופר\"_\n\n"
-        "📊 /menu — Dashboard & insights\n"
-        "💰 /budget `amount` — Set monthly budget\n"
-        "↩️ /undo — Remove last expense\n"
-        "📤 /export — Download CSV file\n"
-        "🗑️ /deleteall — Clear all your data\n"
-        "❓ /help — This message"
+        "� *FinTechBot Commands Protocol:*\n\n"
+        "� *Log an Expense:* Just type naturally in English or Hebrew.\n"
+        "  _\"Flight to London 450 EUR\"_\n"
+        "  _\"שילמתי 200 על דלק\"_\n\n"
+        "📊 /menu — Access your Analytics Dashboard & Insights\n"
+        "⚙️ /settings — Configure your Wealth Profile\n"
+        "💰 /budget `amount` — Define a monthly target (e.g., `/budget 5000`)\n"
+        "↩️ /undo — Revert the last logged transaction\n"
+        "📤 /export — Download your complete transaction ledger (CSV)\n"
+        "🗑️ /deleteall — Wipe your financial data\n"
+        "❓ /help — Documentation"
     )
     await _safe_send(context.bot, update.effective_chat.id, text)
 
@@ -346,43 +380,99 @@ async def deleteall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 @_private_only
-async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sets or shows the user's age and wage."""
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts the profile onboarding conversation."""
     user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-
-    if context.args and len(context.args) == 2:
-        try:
-            age = int(context.args[0])
-            wage = float(context.args[1])
-            # Validate ranges
-            if not (13 <= age <= 120):
-                await _safe_send(context.bot, chat_id, "⚠️ Age must be between 13 and 120.")
-                return
-            if not (0 < wage <= 1_000_000):
-                await _safe_send(context.bot, chat_id, "⚠️ Wage must be between 1 and 1,000,000.")
-                return
-            db.set_profile(user_id, age, wage)
-            await _safe_send(context.bot, chat_id, f"👤 *Profile Updated!*\nAge: {age}\nWage: {wage:.0f} NIS")
-        except ValueError:
-            await _safe_send(context.bot, chat_id, "⚠️ Usage: /profile `<age> <wage>`\nExample: `/profile 25 12000`")
+    profile = await asyncio.to_thread(db.get_profile, user_id)
+    if profile:
+        await update.message.reply_text(
+            f"👤 *Your Wealth Profile:*\n"
+            f"Age: {profile['age']}\n"
+            f"Annual Income: {profile['yearly_income']:,.0f} {profile['currency']}\n"
+            f"Objective / Context: {profile['additional_info']}\n\n"
+            f"Let's calibrate your profile for sharper AI intelligence. 🧠\nFirst, what is your current age?\n\n_(Send /cancel at any time to abort)_",
+            parse_mode='Markdown'
+        )
     else:
-        profile = db.get_profile(user_id)
-        if profile:
-            await _safe_send(
-                context.bot, chat_id,
-                f"👤 *Your Profile:*\nAge: {profile['age']}\nWage: {profile['wage']:.0f} NIS\n\nTo update: `/profile <age> <wage>`"
-            )
-        else:
-            await _safe_send(context.bot, chat_id, "👤 No profile set.\nUse `/profile <age> <wage>` to get better AI insights.")
+        await update.message.reply_text(
+            "Welcome to the Profile Calibration protocol. 🧠\n\nBy providing accurate data, the AI Wealth Manager can generate highly tailored mathematical models and behavioral insights for your spending.\n\nFirst, what is your current age?\n\n_(Send /cancel at any time to abort)_"
+        )
+    return ASK_AGE
+
+async def ask_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    try:
+        age = int(text)
+        if not (13 <= age <= 120):
+            raise ValueError
+        context.user_data['age'] = age
+        await update.message.reply_text("Excellent. Next, what is your total estimated annual income? (e.g. 150000)")
+        return ASK_INCOME
+    except ValueError:
+        await update.message.reply_text("⚠️ Invalid format. Please enter a standard integer for your age (e.g., 30).")
+        return ASK_AGE
+
+async def ask_income(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    try:
+        income = float(text)
+        if income < 0:
+            raise ValueError
+        context.user_data['income'] = income
+        await update.message.reply_text("Understood. Which fiat currency do you primarily hold? (e.g., NIS, USD, EUR, GBP)")
+        return ASK_CURRENCY
+    except ValueError:
+        await update.message.reply_text("⚠️ Invalid format. Please enter a positive number for your annual income.")
+        return ASK_INCOME
+
+async def ask_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    currency = update.message.text.strip().upper()
+    if len(currency) > 10:
+        await update.message.reply_text("⚠️ Currency code too long. Standard codes preferred (NIS, USD, EUR).")
+        return ASK_CURRENCY
+    
+    context.user_data['currency'] = currency
+    await update.message.reply_text("Finally, is there any specific financial context or objective I should optimize for? (e.g., 'Aggressively saving for a mortgage', 'Clearing $20k in student debt', 'LeanFIRE within 10 years')\n\nSend 'None' if you have no specific directives.")
+    return ASK_INFO
+
+async def ask_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    info = update.message.text.strip()
+    if info.lower() == 'none':
+        info = ""
+        
+    age = context.user_data.get('age')
+    income = context.user_data.get('income')
+    currency = context.user_data.get('currency', 'NIS')
+    user_id = update.effective_user.id
+    
+    try:
+        await asyncio.to_thread(db.set_profile, user_id, age, income, currency, info)
+        await update.message.reply_text(
+            "✅ *Profile saved successfully!*\n\nThe AI Coach will now use this info for insights.\nUse /menu to view your dashboard.", 
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"Error saving profile: {e}")
+        await update.message.reply_text("⚠️ There was an error saving your profile. Please try again later.")
+        
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Profile setup cancelled. Your existing profile was not modified.")
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 
 # ── Callback Handler ──
 
+@_private_only
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Parses the CallbackQuery and updates the message text."""
     query = update.callback_query
+    if not query:
+        return
     await query.answer()
 
     telegram_id = query.from_user.id
@@ -415,6 +505,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             expense_id = int(data[4:])
             success = await asyncio.to_thread(db.delete_expense, telegram_id, expense_id)
             if success:
+
                 await query.edit_message_text(text="🗑️ *Expense deleted!*\n\nUse /menu to refresh.", parse_mode='Markdown')
             else:
                 await query.edit_message_text(text="⚠️ Could not delete. It may already be removed.")
@@ -625,24 +716,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == 'insights':
             status_msg = await query.edit_message_text(text="🧠 *Analyzing your spending...*\n\n_This might take a moment._", parse_mode='Markdown')
 
-            # Fetch all needed context quickly
-            totals = await asyncio.to_thread(db.get_category_totals, telegram_id)
-            budget = await asyncio.to_thread(db.get_budget, telegram_id)
-            recent = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
-            profile = await asyncio.to_thread(db.get_profile, telegram_id)
-            
-            # Call enhanced insights
-            insight = llm_helper.generate_insights(
-                totals=totals,
-                age=profile['age'] if profile else None,
-                wage=profile['wage'] if profile else None,
-                budget=budget,
-                recent_expenses=recent
-            )
+            try:
+                # Fetch all needed context quickly
+                totals = await asyncio.to_thread(db.get_category_totals, telegram_id)
+                budget = await asyncio.to_thread(db.get_budget, telegram_id)
+                recent = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
+                profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                
+                # Call enhanced insights
+                insight = await asyncio.to_thread(
+                    llm_helper.generate_insights,
+                    totals=totals,
+                    age=profile['age'] if profile else None,
+                    yearly_income=profile['yearly_income'] if profile else None,
+                    budget=budget,
+                    recent_expenses=recent,
+                    currency=profile.get('currency', 'NIS') if profile else 'NIS',
+                    additional_info=profile.get('additional_info', '') if profile else None
+                )
 
-            # Format for better readability
-            safe_insight = _escape_markdown(insight)
-            await query.edit_message_text(text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", parse_mode='Markdown')
+                if not insight or "⚠️" in insight:
+                    await query.edit_message_text(text="⚠️ *AI Engine Unavailable*\n\nCould not generate insights at this time.", parse_mode='Markdown')
+                    return
+
+                # Format for better readability
+                safe_insight = _escape_markdown(insight)
+                await query.edit_message_text(text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", parse_mode='Markdown')
+            except Exception as e:
+                logger.error(f"Error generating insights callback: {e}")
+                await query.edit_message_text(text="⚠️ *Error*\n\nThe AI ran into an issue processing your profile.", parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Error in button_handler for user {telegram_id}: {type(e).__name__}")
@@ -682,8 +784,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     processing_msg = await context.bot.send_message(chat_id=chat_id, text="⏳ _Processing..._", parse_mode='Markdown')
 
     try:
-        # 1. Parse with LLM
-        expense_data = llm_helper.parse_expense(user_text)
+        # 1. Parse with LLM (in background thread to avoid blocking)
+        expense_data = await asyncio.to_thread(llm_helper.parse_expense, user_text)
         status = expense_data.get('status', 'not_expense') if expense_data else 'not_expense'
 
         if status == 'success':
@@ -711,6 +813,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     symbols = {'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥'}
                     symbol = symbols.get(orig_currency, orig_currency)
                     response_text += f"\n💱 Converted from *{symbol}{orig_amount:.2f}* → *₪{amount:.2f}*\n"
+
 
                 response_text += "\nUse /menu to see your dashboard."
 
@@ -763,37 +866,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _safe_send(context.bot, chat_id, response_text)
 
 
-if __name__ == '__main__':
-    # Initialize DB at startup
-    db.init_db()
-
-    # Retrieve the token from environment variables
+def get_application():
+    """Builds and configures the Telegram Application instance."""
     token = os.getenv('TELEGRAM_BOT_TOKEN')
-
     if not token:
         logger.error("TELEGRAM_BOT_TOKEN not found in .env file.")
-        exit(1)
+        return None
 
-    # Build the application
+    # Use a single shared application instance
     application = ApplicationBuilder().token(token).build()
 
     # ── Global Error Handler ──
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-        """Catches any uncaught exception across all handlers."""
         logger.error(f"Unhandled exception: {context.error}", exc_info=context.error)
-        # Try to notify the user if possible
         if isinstance(update, Update) and update.effective_chat:
             try:
-                await _safe_send(
-                    context.bot, update.effective_chat.id,
-                    "⚠️ An unexpected error occurred. Please try again."
-                )
-            except Exception:
-                pass  # Can't even send error msg — just log and move on
+                await _safe_send(context.bot, update.effective_chat.id, "⚠️ An unexpected error occurred.")
+            except Exception: pass
 
     application.add_error_handler(error_handler)
 
-    # Add conversation handler for onboarding & settings
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start), CommandHandler('settings', settings_command)],
         states={
@@ -805,20 +897,23 @@ if __name__ == '__main__':
         fallbacks=[CommandHandler('cancel', cancel_onboarding)]
     )
     application.add_handler(conv_handler)
-
-    # Add general handlers
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('menu', menu_command))
     application.add_handler(CommandHandler('undo', undo_command))
     application.add_handler(CommandHandler('budget', budget_command))
     application.add_handler(CommandHandler('export', export_command))
     application.add_handler(CommandHandler('deleteall', deleteall_command))
-    
-    # The normal text message handler for parsing expenses
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.add_handler(CallbackQueryHandler(button_handler))
 
-    # Run the bot
-    logger.info("Bot is starting...")
-    application.run_polling(drop_pending_updates=True)
+    return application
+
+
+if __name__ == '__main__':
+    # Standard Polling startup (for local development)
+    db.init_db()
+    app = get_application()
+    if app:
+        logger.info("Bot is starting (Polling)...")
+        app.run_polling(drop_pending_updates=True)
 

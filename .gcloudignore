@@ -1,0 +1,42 @@
+# .gcloudignore — Explicit Cloud Upload Policy
+# This ensures gcloud uploads only what is needed for the Docker build.
+
+# ── General Rules ──
+.gcloudignore
+.git/
+.gitignore
+
+# ── Block Environment & Secrets ──
+.env
+*.json
+GOOGLE_APPLICATION_CREDENTIALS
+
+# ── Block Databases ──
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Block Local Python Environment ──
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ── Block IDEs ──
+.vscode/
+.idea/
+
+# ── ALLOW essential files that might be matched by broad patterns ──
+#!requirements.txt  # Explicitly allow in case of hierarchy issues
+
+# ── Block Agent Workspace ──
+.agent/
+.gemini/
+
+# ── Block Heavy Assets ──
+GoogleCloudSDKInstaller.exe
+tests/
+scripts/
