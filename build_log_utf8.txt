@@ -1,0 +1,67 @@
+﻿---------------------------------------------------------------------- REMOTE BUILD OUTPUT ----------------------------------------------------------------------
+starting build "48c17f6c-491e-401e-a68d-9d046d79e2f9"
+FETCHSOURCE
+Fetching storage object: gs://run-sources-finbuddy-etl-me-west1/services/fintech-bot/1771987085.880827-925dd9a8e74d4c07bed8bd0c2a2ffc9f.zip#1771987086044944
+Copying gs://run-sources-finbuddy-etl-me-west1/services/fintech-bot/1771987085.880827-925dd9a8e74d4c07bed8bd0c2a2ffc9f.zip#1771987086044944...
+/ [0 files][    0.0 B/276.6 KiB]                                                
+/ [1 files][276.6 KiB/276.6 KiB]
+Operation completed over 1 objects/276.6 KiB.
+Archive:  /tmp/source-archive.zip
+  inflating: /workspace/.dockerignore
+  inflating: /workspace/bot.py
+  inflating: /workspace/currency.py
+  inflating: /workspace/database.py
+  inflating: /workspace/Dockerfile
+  inflating: /workspace/GoogleCloudSDKInstaller.exe
+  inflating: /workspace/llm_helper.py
+  inflating: /workspace/main.py
+  inflating: /workspace/models.py
+  inflating: /workspace/README.md
+  inflating: /workspace/security.py
+  inflating: /workspace/sheets_etl.py
+  inflating: /workspace/start_bot.bat
+BUILD
+Already have image (with digest): gcr.io/cloud-builders/docker
+Sending build context to Docker daemon  121.3kB
+Step 1/11 : FROM python:3.11-slim
+3.11-slim: Pulling from library/python
+206356c42440: Pulling fs layer
+13159fd0b051: Pulling fs layer
+269d3f7471e2: Pulling fs layer
+28c7e2bc4784: Pulling fs layer
+28c7e2bc4784: Verifying Checksum
+28c7e2bc4784: Download complete
+13159fd0b051: Verifying Checksum
+13159fd0b051: Download complete
+269d3f7471e2: Verifying Checksum
+269d3f7471e2: Download complete
+206356c42440: Verifying Checksum
+206356c42440: Download complete
+206356c42440: Pull complete
+13159fd0b051: Pull complete
+269d3f7471e2: Pull complete
+28c7e2bc4784: Pull complete
+Digest: sha256:6681c0fed0bd3e7379e2b0bdc739d33edad8d2fe27cb8747b0dd08c72517a62d
+Status: Downloaded newer image for python:3.11-slim
+ 992921a8b23a
+Step 2/11 : ENV PYTHONDONTWRITEBYTECODE=1
+ Running in 7799d650f155
+Removing intermediate container 7799d650f155
+ 96d76ec0a115
+Step 3/11 : ENV PYTHONUNBUFFERED=1
+ Running in d3bd6cfb1995
+Removing intermediate container d3bd6cfb1995
+ 44af0ef0bf19
+Step 4/11 : ENV PORT=8080
+ Running in 324a8aee0509
+Removing intermediate container 324a8aee0509
+ e5ddd523c0d8
+Step 5/11 : WORKDIR /app
+ Running in dc7873e8446f
+Removing intermediate container dc7873e8446f
+ caf5ba67c92d
+Step 6/11 : COPY requirements.txt .
+COPY failed: file not found in build context or excluded by .dockerignore: stat requirements.txt: file does not exist
+ERROR
+ERROR: build step 0 "gcr.io/cloud-builders/docker" failed: step exited with non-zero status: 1
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------

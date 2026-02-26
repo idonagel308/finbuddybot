@@ -204,7 +204,7 @@ def _escape_markdown(text: str) -> str:
     return text
 
 
-async def _safe_send(bot, chat_id, text, parse_mode='Markdown'):
+async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=None):
     """
     Send a message, auto-truncating if it exceeds Telegram's 4096 char limit.
     Falls back to plain text if Markdown parsing fails.
@@ -212,11 +212,11 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown'):
     if len(text) > TELEGRAM_MAX_LENGTH:
         text = text[:TELEGRAM_MAX_LENGTH - 20] + "\n\n_(truncated)_"
     try:
-        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+        return await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode, reply_markup=reply_markup)
     except Exception:
         # Markdown might be malformed — retry as plain text
         try:
-            return await bot.send_message(chat_id=chat_id, text=text, parse_mode=None)
+            return await bot.send_message(chat_id=chat_id, text=text, parse_mode=None, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Failed to send message to {chat_id}: {type(e).__name__}")
             return None
@@ -258,46 +258,48 @@ def _private_only(func):
 
 # ── Command Handlers ──
 
+def _get_main_menu_keyboard() -> InlineKeyboardMarkup:
+    """Returns the primary dashboard inline keyboard."""
+    keyboard = [
+        [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
+        [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
+        [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_menu')],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 @_private_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
-    await _safe_send(
-        context.bot, update.effective_chat.id,
-        "🏦 *Welcome to FinTechBot Premium.* �\n\nI am your Personal Wealth Manager and Financial Intelligence Engine. My role is to log your cash flow, uncover behavioral spending patterns, and optimize your wealth over time.\n\n📝 *To log a transaction, simply text me naturally:*\n  • _\"Spent ₪150 on an Uber\"_\n  • _\"500 for groceries\"_\n  • _\"שילמתי 80 שקל על קפה\"_\n\n📊 Use /menu at any time to access your Analytics Dashboard. Type /help to view all available commands."
+    await update.message.reply_text(
+        "🏦 *Welcome to FinTechBot Premium.*\n\n"
+        "I am your Personal Wealth Manager and Financial Intelligence Engine.\n\n"
+        "📝 *To log a transaction, simply text me naturally:*\n"
+        "  • _\"Spent ₪150 on an Uber\"_\n"
+        "  • _\"100 for groceries\"_\n\n"
+        "📊 *Your Analytics Dashboard:*",
+        reply_markup=_get_main_menu_keyboard(),
+        parse_mode='Markdown'
     )
 
 
 @_private_only
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /help command."""
-    text = (
-        "� *FinTechBot Commands Protocol:*\n\n"
-        "� *Log an Expense:* Just type naturally in English or Hebrew.\n"
-        "  _\"Flight to London 450 EUR\"_\n"
-        "  _\"שילמתי 200 על דלק\"_\n\n"
-        "📊 /menu — Access your Analytics Dashboard & Insights\n"
-        "⚙️ /settings — Configure your Wealth Profile\n"
-        "💰 /budget `amount` — Define a monthly target (e.g., `/budget 5000`)\n"
-        "↩️ /undo — Revert the last logged transaction\n"
-        "📤 /export — Download your complete transaction ledger (CSV)\n"
-        "🗑️ /deleteall — Wipe your financial data\n"
-        "❓ /help — Documentation"
+    await update.message.reply_text(
+        "🤖 *FinTechBot Protocol:*\n\n"
+        "To log an expense, simply type it out. E.g., _\"Flight to London 450 EUR\"_.\n\n"
+        "You can manage your analytics and settings using the Main Dashboard below:",
+        reply_markup=_get_main_menu_keyboard(),
+        parse_mode='Markdown'
     )
-    await _safe_send(context.bot, update.effective_chat.id, text)
 
 
 @_private_only
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sends the interactive menu."""
-    keyboard = [
-        [InlineKeyboardButton("📜 Last Expenses", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
-        [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart')],
-        [InlineKeyboardButton("💡 AI Insights", callback_data='insights'), InlineKeyboardButton("⚙️ Settings", callback_data='settings_menu')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     if not update.message:
         return
-    await update.message.reply_text('📊 *My Finances Menu:*', reply_markup=reply_markup, parse_mode='Markdown')
+    await update.message.reply_text('📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(), parse_mode='Markdown')
 
 
 @_private_only
@@ -757,6 +759,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error generating insights callback: {e}")
                 await query.edit_message_text(text="⚠️ *Error*\n\nThe AI ran into an issue processing your profile.", parse_mode='Markdown')
 
+        elif data == 'settings_menu':
+            keyboard = [
+                [InlineKeyboardButton("📤 Export Data (CSV)", callback_data='export_csv')],
+                [InlineKeyboardButton("🗑️ Delete All Data", callback_data='delete_all')],
+                [InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]
+            ]
+            await query.edit_message_text(
+                text="⚙️ *Settings & Tools*\n\n_Tip: To edit your profile or budget, type /settings or /budget 5000._", 
+                reply_markup=InlineKeyboardMarkup(keyboard), 
+                parse_mode='Markdown'
+            )
+
+        elif data == 'undo_last':
+            last_id = await asyncio.to_thread(db.get_last_expense_id, telegram_id)
+            if not last_id:
+                await query.edit_message_text(text="📭 No expenses to undo.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            else:
+                success = await asyncio.to_thread(db.delete_expense, telegram_id, last_id)
+                if success:
+                    await query.edit_message_text(
+                        text="↩️ *Last expense removed!*", 
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
+                    )
+                else:
+                    await query.edit_message_text(text="⚠️ Could not undo. Try again.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+
+        elif data == 'export_csv':
+            csv_data = await asyncio.to_thread(db.export_expenses_csv, telegram_id)
+            if not csv_data or csv_data.strip() == 'Date,Amount,Category,Description':
+                await query.edit_message_text(text="📭 No expenses to export.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]]))
+            else:
+                file = io.BytesIO(csv_data.encode('utf-8'))
+                file.name = "expenses.csv"
+                await context.bot.send_document(chat_id=telegram_id, document=file, caption="📤 *Your expenses export*", parse_mode='Markdown')
+                await query.edit_message_text(text="✅ Export sent successfully!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]]))
+
+        elif data == 'delete_all':
+            keyboard = [
+                [InlineKeyboardButton("🗑️ Yes, wipe EVERYTHING", callback_data='confirm_delete_all')],
+                [InlineKeyboardButton("❌ Cancel", callback_data='cancel_delete_all')],
+            ]
+            await query.edit_message_text(
+                text="⚠️ *Are you absolutely sure you want to delete ALL your data?*\n\nThis action *cannot be undone!*",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
     except Exception as e:
         logger.error(f"Error in button_handler for user {telegram_id}: {type(e).__name__}")
         try:
@@ -874,7 +924,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.delete_message(chat_id=chat_id, message_id=processing_msg.message_id)
     except Exception:
         pass
-    await _safe_send(context.bot, chat_id, response_text)
+        
+    reply_markup = None
+    if status == 'success' and expense_data.get('amount') and expense_data.get('category'):
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ Undo", callback_data='undo_last'), InlineKeyboardButton("📊 Dashboard", callback_data='back_to_menu')]
+        ])
+
+    await _safe_send(context.bot, chat_id, response_text, reply_markup=reply_markup)
 
 
 def get_application():

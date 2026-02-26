@@ -5,6 +5,7 @@ import threading
 import os
 from datetime import datetime
 from contextlib import contextmanager
+import sheets_etl
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -135,9 +136,6 @@ def add_expense(user_id: int, amount: float, category: str, description: str = "
             
             inserted_id = cursor.lastrowid
             conn.commit()
-            
-            # Mirror to Sheets
-            sheets_etl.append_expense(inserted_id, user_id, date_str, amount, category, description)
             
             logger.info(f"Added expense {inserted_id} for user {user_id}")
             return inserted_id
@@ -271,10 +269,6 @@ def delete_expense(user_id: int, expense_id: int) -> bool:
             )
             conn.commit()
             success = cursor.rowcount > 0
-            
-            if success:
-                # Mirror to Sheets
-                sheets_etl.delete_expense(expense_id)
                 
             return success
     except Exception as e:
@@ -424,6 +418,63 @@ def delete_monthly_expenses(user_id: int) -> int:
     except Exception as e:
         logger.error(f"Error deleting monthly expenses: {e}")
         return 0
+
+def _sync_local_to_sheets_for_user(user_id: int):
+    """Pushes the current state of SQLite for a specific user to Google Sheets for mass updates."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, user_id, date, amount, category, description FROM expenses WHERE user_id = ? ORDER BY date ASC',
+                (user_id,)
+            )
+            rows = cursor.fetchall()
+            
+        # Format for gspread
+        formatted = []
+        for r in rows:
+            formatted.append([r[0], r[1], r[2], r[3], r[4], r[5] or ""])
+            
+        # Background thread so the Telegram UI doesn't hang
+        threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
+        logger.info(f"Triggered background wholesale sync for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to initiate wholesale sync: {e}")
+
+def sync_from_sheets():
+    """
+    Recovers the local SQLite cache from Google Sheets.
+    Senior Developer Note: This is an idempotent 'Cold Start' recovery logic.
+    It logs specific failures but allows the application to remain functional (even if data is stale).
+    """
+    logger.info("Initializing Cold Start Recovery from Sheets...")
+    try:
+        sheets_data = sheets_etl.fetch_all_data()
+        if not sheets_data:
+            logger.info("No data found in Sheets or unable to connect. Proceeding with empty/existing local cache.")
+            return
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Wipe local cache to enforce Sheets as the single source of truth
+            cursor.execute('DELETE FROM expenses')
+            
+            # Batch insert
+            insert_data = [
+                (d['id'], d['user_id'], d['date'], d['amount'], d['category'], d['description'])
+                for d in sheets_data
+            ]
+            cursor.executemany('''
+                INSERT INTO expenses (id, user_id, date, amount, category, description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', insert_data)
+            conn.commit()
+            
+        logger.info(f"Cold Start complete. Synced {len(insert_data)} expenses from Sheets.")
+    except Exception as e:
+        logger.error(f"Failed to sync from Sheets during Cold Start: {e}")
+        # We catch the exception because the application should start even if the sync fails (Offline Mode)
 
 if __name__ == "__main__":
     # verification block

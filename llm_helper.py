@@ -4,9 +4,8 @@ import json
 import time
 import math
 import logging
-import google.generativeai as genai
-from dotenv import load_dotenv
 import currency as curr
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -16,10 +15,19 @@ logger = logging.getLogger(__name__)
 # Configure Gemini API
 api_key = os.getenv("GOOGLE_API_KEY")
 
-if not api_key:
-    logger.warning("GOOGLE_API_KEY not found in .env")
-else:
-    genai.configure(api_key=api_key)
+_genai_module = None
+
+def _get_genai():
+    """Lazy-loads the Google Generative AI SDK to improve cold start latency."""
+    global _genai_module
+    if _genai_module is None:
+        import google.generativeai as genai
+        if not api_key:
+            logger.warning("GOOGLE_API_KEY not found in .env")
+        else:
+            genai.configure(api_key=api_key)
+        _genai_module = genai
+    return _genai_module
 
 # List of models to try in order of preference/stability
 MODELS_TO_TRY = [
@@ -268,6 +276,8 @@ def generate_insights(
     4. Plain text only: DO NOT use any markdown styling (no bold **, no italics _) because Telegram formatting will be applied dynamically later. You MAY and SHOULD use emojis.
     """
 
+    genai = _get_genai()
+
     for model_name in MODELS_TO_TRY:
         try:
             if model_name not in _insight_model_cache:
@@ -324,6 +334,7 @@ Examples:
 <user_message>{safe_text}</user_message>
 """
 
+        genai = _get_genai()
         for model_name in MODELS_TO_TRY:
             try:
                 if model_name not in _model_cache:

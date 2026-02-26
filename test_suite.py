@@ -219,7 +219,7 @@ def test_database():
     _section("5. Database Operations")
 
     from unittest.mock import patch
-    with patch.object(db.sheets_etl, 'append_expense'), patch.object(db.sheets_etl, 'delete_expense'):
+    with patch('sheets_etl.append_expense'), patch('sheets_etl.delete_expense'), patch('sheets_etl.rewrite_user_expenses'):
         # Clean test DB
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
