@@ -6,8 +6,6 @@ import os
 from datetime import datetime
 from contextlib import contextmanager
 
-import sheets_etl
-
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -426,78 +424,6 @@ def delete_monthly_expenses(user_id: int) -> int:
     except Exception as e:
         logger.error(f"Error deleting monthly expenses: {e}")
         return 0
-
-def _sync_local_to_sheets_for_user(user_id: int):
-    """Pushes the current state of SQLite for a specific user to Google Sheets for mass updates."""
-    try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT id, user_id, date, amount, category, description FROM expenses WHERE user_id = ? ORDER BY date ASC',
-                (user_id,)
-            )
-            rows = cursor.fetchall()
-            
-        # Format for gspread
-        formatted = []
-        for r in rows:
-            formatted.append([r[0], r[1], r[2], r[3], r[4], r[5] or ""])
-            
-        # Background thread so the Telegram UI doesn't hang
-        threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
-        logger.info(f"Triggered background wholesale sync for user {user_id}")
-    except Exception as e:
-        logger.error(f"Failed to initiate wholesale sync: {e}")
-
-
-def sync_from_sheets():
-    """
-    Recovers the local SQLite cache from Google Sheets.
-    Senior Developer Note: This is an idempotent 'Cold Start' recovery logic.
-    It logs specific failures but allows the application to remain functional (even if data is stale).
-    """
-    logger.info("⚡ [STARTUP] Initiating Secure Sync from Google Sheets Source of Truth...")
-    
-    try:
-        rows = sheets_etl.fetch_all_data()
-    except Exception as e:
-        logger.error(f"❌ [CRITICAL] Failed to reach Google Sheets during startup: {e}")
-        logger.warning("⚠️ Application will start with existing local data (if any). Sync will retry on the next write.")
-        return
-
-    if not rows:
-        logger.info("ℹ️ [STARTUP] No historical data found in Google Sheets. Local cache remains empty.")
-        return
-
-    try:
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Atomic transaction for recovery
-            cursor.execute("BEGIN TRANSACTION")
-            try:
-                # Clear existing local cache for specific user (or all if recovering fresh)
-                cursor.execute("DELETE FROM expenses")
-                
-                # Batch insert recovered rows
-                data_to_insert = [
-                    (r['id'], r['user_id'], r['date'], r['amount'], r['category'], r['description'])
-                    for r in rows
-                ]
-                cursor.executemany('''
-                    INSERT INTO expenses (id, user_id, date, amount, category, description)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', data_to_insert)
-                
-                conn.commit()
-                logger.info(f"✅ [SUCCESS] Hot-cache synchronized: {len(rows)} records restored from Sheets.")
-            except Exception as e:
-                cursor.execute("ROLLBACK")
-                logger.error(f"❌ [DB_ERROR] Failed to commit restored data to SQLite: {e}")
-                raise
-    except Exception as e:
-        logger.error(f"❌ [SYNC_FAIL] Database recovery failed: {e}")
-
 
 if __name__ == "__main__":
     # verification block

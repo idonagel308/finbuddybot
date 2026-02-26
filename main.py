@@ -42,10 +42,9 @@ async def lifespan(app: FastAPI):
     """Handles startup and shutdown events."""
     db.init_db()
     
-    # Cloud-Native Persistence: Sync from Sheets if local DB is empty or on fresh start
-    # We do this in a thread because gspread is blocking
-    await asyncio.to_thread(db.sync_from_sheets)
-    
+    # Cloud-Native Persistence
+    # (Removed heavy Sheets sync to speed up cold start boot times)
+
     if telegram_app:
         await telegram_app.initialize()
         await telegram_app.start()

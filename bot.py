@@ -5,10 +5,7 @@ import logging
 import time
 import traceback
 from datetime import datetime
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend (no GUI needed)
-import matplotlib.pyplot as plt
-import numpy as np
+
 from functools import wraps
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -50,7 +47,11 @@ if ALLOWED_USER_ID:
         ALLOWED_USER_ID = None
 
 # Whitelist of valid callback data values
-VALID_CALLBACKS = {'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart', 'insights', 'delete_all_monthly', 'back_to_menu'}
+VALID_CALLBACKS = {
+    'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart', 
+    'insights', 'delete_all_monthly', 'back_to_menu', 'settings_menu',
+    'export_csv', 'delete_all', 'undo_last'
+}
 
 # ── Emoji Display Mapping ──
 # The data layer stores clean strings ('Food', 'Transport').
@@ -118,8 +119,11 @@ CATEGORY_COLORS = {
 def _generate_pie_chart(totals: dict, total_sum: float) -> io.BytesIO:
     """
     Generates a professional donut pie chart image and returns it as a BytesIO buffer.
-    Returns None if generation fails.
     """
+    import matplotlib
+    matplotlib.use('Agg')  # Non-interactive backend (no GUI needed)
+    import matplotlib.pyplot as plt
+    import numpy as np
     try:
         # Sort by amount descending
         sorted_items = sorted(totals.items(), key=lambda x: x[1], reverse=True)
@@ -288,7 +292,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📜 Last Expenses", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
         [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart')],
-        [InlineKeyboardButton("💡 AI Insights", callback_data='insights')],
+        [InlineKeyboardButton("💡 AI Insights", callback_data='insights'), InlineKeyboardButton("⚙️ Settings", callback_data='settings_menu')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     if not update.message:
@@ -383,9 +387,16 @@ async def deleteall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Starts the profile onboarding conversation."""
     user_id = update.effective_user.id
+    
+    if update.callback_query:
+        await update.callback_query.answer()
+        message = update.callback_query.message
+    else:
+        message = update.message
+        
     profile = await asyncio.to_thread(db.get_profile, user_id)
     if profile:
-        await update.message.reply_text(
+        await message.reply_text(
             f"👤 *Your Wealth Profile:*\n"
             f"Age: {profile['age']}\n"
             f"Annual Income: {profile['yearly_income']:,.0f} {profile['currency']}\n"
@@ -394,7 +405,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     else:
-        await update.message.reply_text(
+        await message.reply_text(
             "Welcome to the Profile Calibration protocol. 🧠\n\nBy providing accurate data, the AI Wealth Manager can generate highly tailored mathematical models and behavioral insights for your spending.\n\nFirst, what is your current age?\n\n_(Send /cancel at any time to abort)_"
         )
     return ASK_AGE
@@ -887,7 +898,11 @@ def get_application():
     application.add_error_handler(error_handler)
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', start), CommandHandler('settings', settings_command)],
+        entry_points=[
+            CommandHandler('start', start), 
+            CommandHandler('settings', settings_command),
+            CallbackQueryHandler(settings_command, pattern='^settings_menu$')
+        ],
         states={
             ASK_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_age)],
             ASK_INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_income)],
