@@ -1,0 +1,28 @@
+steps:
+  # Step 1: Build the Docker image from the current directory
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/fintech-bot', '.']
+
+  # Step 2: Push the image to Google Container Registry (GCR)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/fintech-bot']
+
+  # Step 3: Deploy the image to Google Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'fintech-bot'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/fintech-bot'
+      - '--region'
+      - 'me-west1'
+      - '--service-account'
+      - 'finbot-sheets@finbuddy-etl.iam.gserviceaccount.com'
+      - '--allow-unauthenticated'
+      - '--set-env-vars'
+      - 'TELEGRAM_BOT_TOKEN=${_TELEGRAM_BOT_TOKEN},GOOGLE_SHEET_ID=${_GOOGLE_SHEET_ID},ALLOWED_USER_ID=${_ALLOWED_USER_ID}'
+
+images:
+  - 'gcr.io/$PROJECT_ID/fintech-bot'
