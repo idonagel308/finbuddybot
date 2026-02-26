@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # --- Onboarding / Settings States ---
-ASK_AGE, ASK_INCOME, ASK_CURRENCY, ASK_INFO = range(4)
+ASK_AGE, ASK_INCOME, ASK_CURRENCY, ASK_LANGUAGE, ASK_INFO = range(5)
 
 import database as db
 import llm_helper
@@ -207,8 +207,27 @@ def _escape_markdown(text: str) -> str:
 async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=None):
     """
     Send a message, auto-truncating if it exceeds Telegram's 4096 char limit.
+    Dynamically translates the message and buttons into the user's preferred language.
     Falls back to plain text if Markdown parsing fails.
     """
+    try:
+        profile = await asyncio.to_thread(db.get_profile, chat_id)
+        target_lang = profile.get('language', 'English') if profile else 'English'
+    except Exception:
+        target_lang = 'English'
+
+    if target_lang.lower() not in ['english', 'en', '']:
+        text = await asyncio.to_thread(llm_helper.translate, text, target_lang)
+        if reply_markup and getattr(reply_markup, 'inline_keyboard', None):
+            new_kb = []
+            for row in reply_markup.inline_keyboard:
+                new_row = []
+                for btn in row:
+                    tr_text = await asyncio.to_thread(llm_helper.translate, btn.text, target_lang)
+                    new_row.append(InlineKeyboardButton(tr_text, callback_data=btn.callback_data))
+                new_kb.append(new_row)
+            reply_markup = InlineKeyboardMarkup(new_kb)
+
     if len(text) > TELEGRAM_MAX_LENGTH:
         text = text[:TELEGRAM_MAX_LENGTH - 20] + "\n\n_(truncated)_"
     try:
@@ -219,6 +238,38 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=Non
             return await bot.send_message(chat_id=chat_id, text=text, parse_mode=None, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Failed to send message to {chat_id}: {type(e).__name__}")
+            return None
+
+
+async def _safe_edit(query, chat_id, text, parse_mode='Markdown', reply_markup=None):
+    """Dynamically translates and edits a message."""
+    try:
+        profile = await asyncio.to_thread(db.get_profile, chat_id)
+        target_lang = profile.get('language', 'English') if profile else 'English'
+    except Exception:
+        target_lang = 'English'
+
+    if target_lang.lower() not in ['english', 'en', '']:
+        text = await asyncio.to_thread(llm_helper.translate, text, target_lang)
+        if reply_markup and getattr(reply_markup, 'inline_keyboard', None):
+            new_kb = []
+            for row in reply_markup.inline_keyboard:
+                new_row = []
+                for btn in row:
+                    tr_text = await asyncio.to_thread(llm_helper.translate, btn.text, target_lang)
+                    new_row.append(InlineKeyboardButton(tr_text, callback_data=btn.callback_data))
+                new_kb.append(new_row)
+            reply_markup = InlineKeyboardMarkup(new_kb)
+
+    if len(text) > TELEGRAM_MAX_LENGTH:
+        text = text[:TELEGRAM_MAX_LENGTH - 20] + "\n\n_(truncated)_"
+    try:
+        return await query.edit_message_text(text=text, parse_mode=parse_mode, reply_markup=reply_markup)
+    except Exception:
+        try:
+            return await query.edit_message_text(text=text, parse_mode=None, reply_markup=reply_markup)
+        except Exception as e:
+            logger.error(f"Failed to edit message for {chat_id}: {type(e).__name__}")
             return None
 
 
@@ -270,12 +321,14 @@ def _get_main_menu_keyboard() -> InlineKeyboardMarkup:
 @_private_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
-    await update.message.reply_text(
+    await _safe_send(context.bot, update.effective_chat.id, 
         "🏦 *Welcome to FinTechBot Premium.*\n\n"
         "I am your Personal Wealth Manager and Financial Intelligence Engine.\n\n"
         "📝 *To log a transaction, simply text me naturally:*\n"
         "  • _\"Spent ₪150 on an Uber\"_\n"
         "  • _\"100 for groceries\"_\n\n"
+        "🌐 *Language & Settings:*\n"
+        "You can choose my response language by tapping ⚙️ Settings below to set up your profile.\n\n"
         "📊 *Your Analytics Dashboard:*",
         reply_markup=_get_main_menu_keyboard(),
         parse_mode='Markdown'
@@ -285,7 +338,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @_private_only
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /help command."""
-    await update.message.reply_text(
+    await _safe_send(context.bot, update.effective_chat.id, 
         "🤖 *FinTechBot Protocol:*\n\n"
         "To log an expense, simply type it out. E.g., _\"Flight to London 450 EUR\"_.\n\n"
         "You can manage your analytics and settings using the Main Dashboard below:",
@@ -299,7 +352,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sends the interactive menu."""
     if not update.message:
         return
-    await update.message.reply_text('📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(), parse_mode='Markdown')
+    await _safe_send(context.bot, update.effective_chat.id, '📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(), parse_mode='Markdown')
 
 
 @_private_only
@@ -342,7 +395,7 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         budget = db.get_budget(user_id)
         if budget:
-            total = db.get_monthly_summary(user_id)
+            total, _ = db.get_monthly_summary(user_id)
             remaining = budget - total
             status = "✅" if remaining > 0 else "🚨"
             await _safe_send(
@@ -402,6 +455,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 *Your Wealth Profile:*\n"
             f"Age: {profile['age']}\n"
             f"Annual Income: {profile['yearly_income']:,.0f} {profile['currency']}\n"
+            f"Language: {profile.get('language', 'English')}\n"
             f"Objective / Context: {profile['additional_info']}\n\n"
             f"Let's calibrate your profile for sharper AI intelligence. 🧠\nFirst, what is your current age?\n\n_(Send /cancel at any time to abort)_",
             parse_mode='Markdown'
@@ -419,10 +473,10 @@ async def ask_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not (13 <= age <= 120):
             raise ValueError
         context.user_data['age'] = age
-        await update.message.reply_text("Excellent. Next, what is your total estimated annual income? (e.g. 150000)")
+        await _safe_send(context.bot, update.effective_chat.id, "Excellent. Next, what is your total estimated annual income? (e.g. 150000)")
         return ASK_INCOME
     except ValueError:
-        await update.message.reply_text("⚠️ Invalid format. Please enter a standard integer for your age (e.g., 30).")
+        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Invalid format. Please enter a standard integer for your age (e.g., 30).")
         return ASK_AGE
 
 async def ask_income(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -432,20 +486,29 @@ async def ask_income(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if income < 0:
             raise ValueError
         context.user_data['income'] = income
-        await update.message.reply_text("Understood. Which fiat currency do you primarily hold? (e.g., NIS, USD, EUR, GBP)")
+        await _safe_send(context.bot, update.effective_chat.id, "Understood. Which fiat currency do you primarily hold? (e.g., NIS, USD, EUR, GBP)")
         return ASK_CURRENCY
     except ValueError:
-        await update.message.reply_text("⚠️ Invalid format. Please enter a positive number for your annual income.")
+        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Invalid format. Please enter a positive number for your annual income.")
         return ASK_INCOME
 
 async def ask_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
     currency = update.message.text.strip().upper()
     if len(currency) > 10:
-        await update.message.reply_text("⚠️ Currency code too long. Standard codes preferred (NIS, USD, EUR).")
+        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Currency code too long. Standard codes preferred (NIS, USD, EUR).")
         return ASK_CURRENCY
     
     context.user_data['currency'] = currency
-    await update.message.reply_text("Finally, is there any specific financial context or objective I should optimize for? (e.g., 'Aggressively saving for a mortgage', 'Clearing $20k in student debt', 'LeanFIRE within 10 years')\n\nSend 'None' if you have no specific directives.")
+    await _safe_send(context.bot, update.effective_chat.id, "Excellent. What language should I respond in? (e.g., English, Hebrew, Spanish, etc.)")
+    return ASK_LANGUAGE
+
+async def ask_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    language = update.message.text.strip()
+    if len(language) > 50:
+        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Language name too long. Please provide a standard language name.")
+        return ASK_LANGUAGE
+    context.user_data['language'] = language
+    await _safe_send(context.bot, update.effective_chat.id, "Finally, is there any specific financial context or objective I should optimize for? (e.g., 'Aggressively saving for a mortgage', 'Clearing $20k in student debt', 'LeanFIRE within 10 years')\n\nSend 'None' if you have no specific directives.")
     return ASK_INFO
 
 async def ask_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,23 +519,24 @@ async def ask_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     age = context.user_data.get('age')
     income = context.user_data.get('income')
     currency = context.user_data.get('currency', 'NIS')
+    language = context.user_data.get('language', 'English')
     user_id = update.effective_user.id
     
     try:
-        await asyncio.to_thread(db.set_profile, user_id, age, income, currency, info)
-        await update.message.reply_text(
+        await asyncio.to_thread(db.set_profile, user_id, age, income, currency, language, info)
+        await _safe_send(context.bot, update.effective_chat.id, 
             "✅ *Profile saved successfully!*\n\nThe AI Coach will now use this info for insights.\nUse /menu to view your dashboard.", 
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.error(f"Error saving profile: {e}")
-        await update.message.reply_text("⚠️ There was an error saving your profile. Please try again later.")
+        await _safe_send(context.bot, update.effective_chat.id, "⚠️ There was an error saving your profile. Please try again later.")
         
     context.user_data.clear()
     return ConversationHandler.END
 
 async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Profile setup cancelled. Your existing profile was not modified.")
+    await _safe_send(context.bot, update.effective_chat.id, "❌ Profile setup cancelled. Your existing profile was not modified.")
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -895,7 +959,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # Budget check
                 budget = await asyncio.to_thread(db.get_budget, user_id)
                 if budget:
-                    total = await asyncio.to_thread(db.get_monthly_summary, user_id)
+                    total, _ = await asyncio.to_thread(db.get_monthly_summary, user_id)
                     if total > budget:
                         response_text += f"\n\n🚨 *Budget alert!* You've spent {total:.0f}/{budget:.0f}"
                     elif total > budget * 0.8:
@@ -978,6 +1042,7 @@ def get_application():
             ASK_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_age)],
             ASK_INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_income)],
             ASK_CURRENCY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_currency)],
+            ASK_LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_language)],
             ASK_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_info)],
         },
         fallbacks=[CommandHandler('cancel', cancel_onboarding)]

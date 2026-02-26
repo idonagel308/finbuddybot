@@ -68,11 +68,16 @@ def _get_sheet():
         creds, project = google.auth.default(scopes=SCOPES)
         client = gspread.authorize(creds)
         doc = client.open_by_key(sheet_id)
-        sheet = doc.sheet1
         
-        if sheet.title != "Expenses":
-            try: sheet.update_title("Expenses")
-            except: pass
+        # Auto-Heal: Ensure 'Expenses' worksheet exists
+        try:
+            sheet = doc.worksheet("Expenses")
+        except gspread.exceptions.WorksheetNotFound:
+            logger.warning("'Expenses' worksheet not found. Creating it...")
+            sheet = doc.add_worksheet(title="Expenses", rows="1000", cols="20")
+            headers = ["ID", "User ID", "Date", "Amount", "Category", "Description"]
+            sheet.append_row(headers)
+            logger.info("Created 'Expenses' worksheet with default headers.")
 
         _cached_sheet = sheet
         _sheet_cache_time = time.time()

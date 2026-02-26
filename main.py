@@ -16,6 +16,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List
 from contextlib import asynccontextmanager
@@ -61,6 +62,9 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan
 )
+
+# ── Web App Static Files ──
+# (Mount removed to keep bot lean)
 
 
 # ── Global Exception Handler ──
@@ -199,7 +203,7 @@ async def delete_expense(user_id: int, expense_id: int):
 async def get_summary(user_id: int):
     """Get total spent this month."""
     _validate_user_id(user_id)
-    total = db.get_monthly_summary(user_id)
+    total, _ = db.get_monthly_summary(user_id)
     return {"user_id": user_id, "monthly_total": total}
 
 
@@ -214,11 +218,58 @@ async def get_chart_data(user_id: int):
     return totals
 
 
+# ── Web App API (Phase 1: No Auth for Local Testing) ──
+@app.get("/api/webapp/dashboard")
+async def webapp_dashboard(user_id: int):
+    """Serve data for the Telegram Web App dashboard."""
+    _validate_user_id(user_id)
+    profile = db.get_profile(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
+    monthly_spend, _ = db.get_monthly_summary(user_id)
+    
+    rows = db.get_recent_expenses(user_id, limit=5)
+    recent = []
+    for r in rows:
+        recent.append({
+            "id": r[0],
+            "date": r[1],
+            "amount": r[2],
+            "category": r[3],
+            "description": r[4]
+        })
+        
+    return {
+        "profile": profile,
+        "monthly_spend": monthly_spend,
+        "recent_transactions": recent,
+        "insight": f"Total spend so far: {monthly_spend:.2f} {profile.get('currency', 'NIS')}."
+    }
+
+class WebAppTransaction(BaseModel):
+    user_id: int
+    amount: float
+    category: str
+    description: str = ""
+
+@app.post("/api/webapp/transaction")
+async def webapp_transaction(tx: WebAppTransaction):
+    """Log a transaction from Web App."""
+    _validate_user_id(tx.user_id)
+    try:
+        db.add_expense(tx.user_id, tx.amount, tx.category, tx.description)
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Webapp tx error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid data")
+
+
 # ── Entry Point ──
 
 if __name__ == "__main__":
     import uvicorn
 
     db.init_db()
+    # Cold Start: Sync from Sheets to populate local SQLite cache
+    db.sync_from_sheets()
+    
     uvicorn.run(app, host="127.0.0.1", port=8000)
 

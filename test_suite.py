@@ -19,6 +19,7 @@ import sys
 import time
 import sqlite3
 import tempfile
+import sheets_etl
 
 # ── Setup: temporarily override DB to use a test database ──
 TEST_DB = os.path.join(tempfile.gettempdir(), "fintech_test.db")
@@ -78,7 +79,7 @@ def test_intent_detection():
     ]
     for text, desc in not_expense_cases:
         result = _classify_intent(text)
-        _test(f"NOT expense: '{text}' ({desc})", result == 'not_expense', f"got '{result}'")
+        _test(f"NOT expense: '{text}' ({desc})", result == 'not_transaction', f"got '{result}'")
 
     # Should be EXPENSE
     expense_cases = [
@@ -91,7 +92,7 @@ def test_intent_detection():
     ]
     for text, desc in expense_cases:
         result = _classify_intent(text)
-        _test(f"EXPENSE: '{text}' ({desc})", result == 'expense', f"got '{result}'")
+        _test(f"EXPENSE: '{text}' ({desc})", result == 'transaction', f"got '{result}'")
 
     # Should be AMBIGUOUS or NOT expense (Optimized filtering)
     ambiguous_cases = [
@@ -239,13 +240,13 @@ def test_database():
         _test("Category correct", expenses[0][3] == "Food")
 
         # Monthly summary
-        total = db.get_monthly_summary(TEST_USER)
+        total, _ = db.get_monthly_summary(TEST_USER)
         _test("Monthly summary correct", total >= 50.0)
 
-        # Category totals
+        # Category totals (Structure: {category: {"expenses": X, "income": Y}})
         totals = db.get_category_totals(TEST_USER)
         _test("Category totals has Food", "Food" in totals)
-        _test("Food total is 50", totals.get("Food", 0) == 50.0)
+        _test("Food total is 50", totals.get("Food", {}).get("expenses", 0) == 50.0)
 
         # Validation — invalid amount
         try:
@@ -284,26 +285,26 @@ def test_database():
 
         # Profile validation
         try:
-            db.set_profile(TEST_USER, 5, 120000, 'NIS', 'info')  # age too young
+            db.set_profile(TEST_USER, 5, 120000, 'NIS', 'English', 'info')  # age too young
             _test("Profile: age=5 rejected", False, "should have raised ValueError")
         except ValueError:
             _test("Profile: age=5 rejected", True)
 
         try:
-            db.set_profile(TEST_USER, 25, -100, 'NIS', 'info')  # negative income
+            db.set_profile(TEST_USER, 25, -100, 'NIS', 'English', 'info')  # negative income
             _test("Profile: negative income rejected", False, "should have raised ValueError")
         except ValueError:
             _test("Profile: negative income rejected", True)
 
         try:
             long_info = "A" * 1500
-            db.set_profile(TEST_USER, 25, 50000, 'NIS', long_info)  # max 1000 length chars
+            db.set_profile(TEST_USER, 25, 50000, 'NIS', 'English', long_info)  # max 1000 length chars
             _test("Profile: too long info rejected", False, "should have raised ValueError")
         except ValueError:
             _test("Profile: too long info rejected", True)
 
         # Successful profile
-        db.set_profile(TEST_USER, 25, 120000, 'NIS', 'Aggressively saving')
+        db.set_profile(TEST_USER, 25, 120000, 'NIS', 'English', 'Aggressively saving')
         _test("Valid profile set successfully", True)
         prof = db.get_profile(TEST_USER)
         _test("Profile retrieved", prof and prof['age'] == 25)
@@ -317,13 +318,14 @@ def test_database():
         _test("Expense removed from DB", len(remaining) == 0)
 
     # Valid profile
-    db.set_profile(TEST_USER, 25, 120000, 'USD', 'Saving for a house')
+    db.set_profile(TEST_USER, 25, 120000, 'USD', 'English', 'Saving for a house')
     profile = db.get_profile(TEST_USER)
     _test("Valid profile fully saved", 
           profile is not None and 
           profile['age'] == 25 and 
           profile['yearly_income'] == 120000 and 
           profile['currency'] == 'USD' and 
+          profile['language'] == 'English' and
           profile['additional_info'] == 'Saving for a house')
 
     # Valid profile with defaults
@@ -332,6 +334,7 @@ def test_database():
     _test("Valid profile defaults handled", 
           profile2 is not None and 
           profile2['currency'] == 'NIS' and 
+          profile2['language'] == 'English' and 
           profile2['additional_info'] == '')
 
     # Budget
@@ -347,6 +350,12 @@ def test_database():
     _test(f"Delete all returned count={count}", count >= 2)
     remaining = db.get_recent_expenses(user_id=TEST_USER, limit=100)
     _test("All expenses deleted", len(remaining) == 0)
+
+    # Sheets sync test
+    if count > 0:
+        with patch('sheets_etl.rewrite_user_expenses'):
+            db._sync_local_to_sheets_for_user(TEST_USER) # Manually trigger mock
+        _test("Sheets sync mock called without error", True)
 
     # Cleanup
     db.close_connection()
@@ -426,8 +435,8 @@ def test_parse_expense_regex():
         ]
         for text in not_expense_cases:
             result = llm_helper.parse_expense(text)
-            status = result.get('status') if result else 'not_expense'
-            _test(f"Regex: '{text}' → not_expense", status == 'not_expense', f"got '{status}'")
+            status = result.get('status') if result else 'not_transaction'
+            _test(f"Regex: '{text}' → not_transaction", status == 'not_transaction', f"got '{status}'")
 
         # Should show no_category or ambiguous for number-only
         result = llm_helper.parse_expense("I spent 50")
@@ -543,7 +552,7 @@ def test_api():
         bad_resp = client.get(f"/expenses/{test_user}", headers={"X-API-Key": "wrong_key"})
         _test("API Auth rejected wrong key", bad_resp.status_code == 403)
             
-        # Add expense via API (Mocking Sheets ETL so we don't hit real Google servers or crash on missing config)
+        # Add expense via API
         with patch('sheets_etl.append_expense') as mock_append:
             payload = {
                 "user_id": test_user,

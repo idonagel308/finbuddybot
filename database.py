@@ -7,6 +7,7 @@ from datetime import datetime
 from contextlib import contextmanager
 import sheets_etl
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ def init_db():
                     date TEXT NOT NULL,
                     amount REAL NOT NULL CHECK(amount > 0),
                     category TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'expense',
                     description TEXT
                 )
             ''')
@@ -79,14 +81,19 @@ def init_db():
                     age INTEGER,
                     yearly_income REAL,
                     currency TEXT DEFAULT 'NIS',
+                    language TEXT DEFAULT 'English',
                     additional_info TEXT
                 )
             ''')
 
             # Local Migration helpers
+            try: cursor.execute("ALTER TABLE expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
+            except: pass
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN yearly_income REAL")
             except: pass
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN currency TEXT DEFAULT 'NIS'")
+            except: pass
+            try: cursor.execute("ALTER TABLE profiles ADD COLUMN language TEXT DEFAULT 'English'")
             except: pass
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
             except: pass
@@ -118,8 +125,8 @@ def _validate_user_id(user_id):
         raise ValueError(f"Invalid user_id: {user_id}")
 
 
-def add_expense(user_id: int, amount: float, category: str, description: str = ""):
-    """Adds a new expense to SQLite and mirrors to Google Sheets."""
+def add_expense(user_id: int, amount: float, category: str, description: str = "", transaction_type: str = "expense"):
+    """Adds a new expense or income to SQLite."""
     _validate_user_id(user_id)
     _validate_expense(amount, category, description)
     if description:
@@ -130,14 +137,18 @@ def add_expense(user_id: int, amount: float, category: str, description: str = "
             cursor = conn.cursor()
             date_str = datetime.now().isoformat()
             cursor.execute('''
-                INSERT INTO expenses (user_id, date, amount, category, description)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, date_str, amount, category, description))
+                INSERT INTO expenses (user_id, date, amount, category, type, description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, date_str, amount, category, transaction_type, description))
             
             inserted_id = cursor.lastrowid
             conn.commit()
             
-            logger.info(f"Added expense {inserted_id} for user {user_id}")
+            logger.info(f"Added {transaction_type} {inserted_id} for user {user_id}")
+            
+            # Mirror to Sheets in background
+            threading.Thread(target=sheets_etl.append_expense, args=(inserted_id, user_id, date_str, amount, category, description)).start()
+            
             return inserted_id
     except Exception as e:
         logger.error(f"Error adding expense: {e}")
@@ -149,7 +160,7 @@ def get_recent_expenses(user_id: int = None, limit: int = 5):
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            query = "SELECT id, date, amount, category, description FROM expenses"
+            query = "SELECT id, date, amount, category, description, type FROM expenses"
             params = []
             if user_id is not None:
                 query += " WHERE user_id = ?"
@@ -188,13 +199,26 @@ def get_monthly_summary(user_id: int, year: int = None, month: int = None):
         with get_connection() as conn:
             cursor = conn.cursor()
             start, end = _month_range(year, month)
+            
+            # total expenses
             cursor.execute('''
                 SELECT SUM(amount) 
                 FROM expenses 
-                WHERE user_id = ? AND date >= ? AND date < ?
+                WHERE user_id = ? AND type = 'expense' AND date >= ? AND date < ?
             ''', (user_id, start, end))
-            result = cursor.fetchone()
-            return result[0] if result and result[0] else 0.0
+            res_exp = cursor.fetchone()
+            total_exp = res_exp[0] if res_exp and res_exp[0] else 0.0
+
+            # total income
+            cursor.execute('''
+                SELECT SUM(amount) 
+                FROM expenses 
+                WHERE user_id = ? AND type = 'income' AND date >= ? AND date < ?
+            ''', (user_id, start, end))
+            res_inc = cursor.fetchone()
+            total_inc = res_inc[0] if res_inc and res_inc[0] else 0.0
+
+            return total_exp, total_inc
     except Exception as e:
         logger.error(f"Error fetching summary: {e}")
         return 0.0
@@ -209,7 +233,8 @@ def get_yearly_month_totals(user_id: int, year: int = None) -> dict:
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT CAST(strftime('%m', date) AS INTEGER) as month, SUM(amount) as total
+                SELECT CAST(strftime('%m', date) AS INTEGER) as month, 
+                       SUM(CASE WHEN type = 'expense' THEN amount ELSE -amount END) as net_total
                 FROM expenses
                 WHERE user_id = ? AND strftime('%Y', date) = ?
                 GROUP BY month
@@ -229,7 +254,7 @@ def get_monthly_expenses(user_id: int, year: int = None, month: int = None):
             cursor = conn.cursor()
             start, end = _month_range(year, month)
             cursor.execute('''
-                SELECT id, date, amount, category, description 
+                SELECT id, date, amount, category, description, type
                 FROM expenses 
                 WHERE user_id = ? AND date >= ? AND date < ?
                 ORDER BY date DESC
@@ -241,18 +266,20 @@ def get_monthly_expenses(user_id: int, year: int = None, month: int = None):
 
 
 def get_category_totals(user_id: int, year: int = None, month: int = None):
-    """Returns category totals from cache."""
+    """Calculates category totals for a month from cache."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             start, end = _month_range(year, month)
             cursor.execute('''
-                SELECT category, SUM(amount) 
+                SELECT category, 
+                       SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) as expenses,
+                       SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as income
                 FROM expenses 
                 WHERE user_id = ? AND date >= ? AND date < ?
                 GROUP BY category
             ''', (user_id, start, end))
-            return {row[0]: row[1] for row in cursor.fetchall()}
+            return {row[0]: {"expenses": row[1], "income": row[2]} for row in cursor.fetchall()}
     except Exception as e:
         logger.error(f"Error fetching category totals: {e}")
         return {}
@@ -269,6 +296,9 @@ def delete_expense(user_id: int, expense_id: int) -> bool:
             )
             conn.commit()
             success = cursor.rowcount > 0
+            if success:
+                # Mirror to Sheets in background
+                threading.Thread(target=sheets_etl.delete_expense, args=(expense_id,)).start()
                 
             return success
     except Exception as e:
@@ -342,7 +372,7 @@ def get_budget(user_id: int) -> float | None:
         return None
 
 
-def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'NIS', additional_info: str = ""):
+def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'NIS', language: str = 'English', additional_info: str = ""):
     """Sets/updates profile in cache."""
     _validate_user_id(user_id)
     if not isinstance(age, int) or not (13 <= age <= 120):
@@ -356,9 +386,9 @@ def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'N
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT OR REPLACE INTO profiles (user_id, age, yearly_income, currency, additional_info) 
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, age, yearly_income, currency, additional_info))
+                INSERT OR REPLACE INTO profiles (user_id, age, yearly_income, currency, language, additional_info) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (user_id, age, yearly_income, currency, language, additional_info))
             conn.commit()
     except Exception as e:
         logger.error(f"Error setting profile: {e}")
@@ -370,12 +400,13 @@ def get_profile(user_id: int) -> dict | None:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute('SELECT age, yearly_income, currency, additional_info FROM profiles WHERE user_id = ?', (user_id,))
+            cursor.execute('SELECT age, yearly_income, currency, language, additional_info FROM profiles WHERE user_id = ?', (user_id,))
             row = cursor.fetchone()
             if row:
                 return {
                     'age': row[0], 'yearly_income': row[1] or 0.0,
-                    'currency': row[2] or 'NIS', 'additional_info': row[3] or ""
+                    'currency': row[2] or 'NIS', 'language': row[3] or 'English',
+                    'additional_info': row[4] or ""
                 }
             return None
     except Exception as e:
@@ -419,13 +450,14 @@ def delete_monthly_expenses(user_id: int) -> int:
         logger.error(f"Error deleting monthly expenses: {e}")
         return 0
 
+
 def _sync_local_to_sheets_for_user(user_id: int):
     """Pushes the current state of SQLite for a specific user to Google Sheets for mass updates."""
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                'SELECT id, user_id, date, amount, category, description FROM expenses WHERE user_id = ? ORDER BY date ASC',
+                'SELECT id, user_id, date, amount, category, type, description FROM expenses WHERE user_id = ? ORDER BY date ASC',
                 (user_id,)
             )
             rows = cursor.fetchall()
@@ -433,7 +465,7 @@ def _sync_local_to_sheets_for_user(user_id: int):
         # Format for gspread
         formatted = []
         for r in rows:
-            formatted.append([r[0], r[1], r[2], r[3], r[4], r[5] or ""])
+            formatted.append([r[0], r[1], r[2], r[3], r[4], r[5], r[6] or ""])
             
         # Background thread so the Telegram UI doesn't hang
         threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
@@ -445,7 +477,6 @@ def sync_from_sheets():
     """
     Recovers the local SQLite cache from Google Sheets.
     Senior Developer Note: This is an idempotent 'Cold Start' recovery logic.
-    It logs specific failures but allows the application to remain functional (even if data is stale).
     """
     logger.info("Initializing Cold Start Recovery from Sheets...")
     try:
@@ -462,19 +493,19 @@ def sync_from_sheets():
             
             # Batch insert
             insert_data = [
-                (d['id'], d['user_id'], d['date'], d['amount'], d['category'], d['description'])
+                (d['id'], d['user_id'], d['date'], d['amount'], d['category'], d.get('type', 'expense'), d['description'])
                 for d in sheets_data
             ]
             cursor.executemany('''
-                INSERT INTO expenses (id, user_id, date, amount, category, description)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO expenses (id, user_id, date, amount, category, type, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', insert_data)
             conn.commit()
             
         logger.info(f"Cold Start complete. Synced {len(insert_data)} expenses from Sheets.")
     except Exception as e:
         logger.error(f"Failed to sync from Sheets during Cold Start: {e}")
-        # We catch the exception because the application should start even if the sync fails (Offline Mode)
+
 
 if __name__ == "__main__":
     # verification block
