@@ -263,7 +263,7 @@ def _get_main_menu_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
         [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
-        [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_menu')],
+        [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -760,13 +760,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="⚠️ *Error*\n\nThe AI ran into an issue processing your profile.", parse_mode='Markdown')
 
         elif data == 'settings_menu':
+            # This is handled directly by the ConversationHandler in get_application()
+            # If the user clicks "⚙️ Settings & Tools" on the main menu, it triggers settings_command.
+            # Here we provide the actual settings tools if they navigate *away* from the conversation,
+            # or we can provide a sub-menu. To keep it simple, we provide the tools sub-menu here,
+            # but we need to change the callback data of "Update Profile" to trigger the conversation.
+            
+            # Note: Since 'settings_menu' triggers the conversation, this block in button_handler
+            # actually gets intercepted by the ConversationHandler if the pattern matches!
+            # Therefore, this code block in button_handler for 'settings_menu' might be dead code
+            # unless we change the entry point pattern.
+            pass
+
+        elif data == 'settings_tools':
             keyboard = [
-                [InlineKeyboardButton("📤 Export Data (CSV)", callback_data='export_csv')],
+                [InlineKeyboardButton("� Update Profile Calibration", callback_data='settings_menu')],
+                [InlineKeyboardButton("�📤 Export Data (CSV)", callback_data='export_csv')],
                 [InlineKeyboardButton("🗑️ Delete All Data", callback_data='delete_all')],
                 [InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]
             ]
             await query.edit_message_text(
-                text="⚙️ *Settings & Tools*\n\n_Tip: To edit your profile or budget, type /settings or /budget 5000._", 
+                text="⚙️ *Settings & Tools*\n\n_Tip: Your profile calibrates the AI Insights engine._", 
                 reply_markup=InlineKeyboardMarkup(keyboard), 
                 parse_mode='Markdown'
             )
