@@ -8,11 +8,13 @@ ENV PORT=8080
 
 WORKDIR /app
 
-# System Dependencies (Required for building some Python packages like matplotlib/gspread)
+# System Dependencies (Required for building Python packages like numpy/matplotlib)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
     libpng-dev \
     libfreetype6-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependency Layer
