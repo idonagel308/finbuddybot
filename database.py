@@ -91,7 +91,7 @@ def init_db():
                 )
             ''')
 
-            # 5. Insights Table
+            # 5. Insights Table (Phase 3)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS insights (
                     user_id BIGINT,
@@ -103,20 +103,20 @@ def init_db():
                 )
             ''')
 
-            # 6. User Dashboard Settings
+            # 6. User Dashboard Settings (Phase 3)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id BIGINT PRIMARY KEY,
-                    theme TEXT,
+                    theme TEXT DEFAULT 'dark',
                     layout TEXT,
-                    budget_target REAL,
+                    budget_target REAL DEFAULT 0,
                     financial_goal TEXT,
-                    language TEXT,
-                    accent_color TEXT
+                    language TEXT DEFAULT 'English',
+                    accent_color TEXT DEFAULT 'indigo'
                 )
             ''')
 
-            # Local Migration helpers
+            # Migration helpers (safe for existing installations)
             try: cursor.execute("ALTER TABLE expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
             except: pass
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN yearly_income REAL")
@@ -128,43 +128,6 @@ def init_db():
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
             except: pass
             
-            # Insights table migration (create if not exists)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS insights (
-                    user_id BIGINT,
-                    year INTEGER,
-                    month INTEGER,
-                    content TEXT,
-                    timestamp TEXT,
-                    PRIMARY KEY (user_id, year, month)
-                )
-            ''')
-
-            # 6. User Settings Table (Phase 3)
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    user_id BIGINT PRIMARY KEY,
-                    theme TEXT DEFAULT 'dark',
-                    accent_color TEXT DEFAULT 'indigo',
-                    layout JSON,
-                    budget_target REAL DEFAULT 0,
-                    updated_at TEXT
-                )
-            ''')
-            
-            # Settings table migration
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS user_settings (
-                    user_id BIGINT PRIMARY KEY,
-                    theme TEXT,
-                    layout TEXT,
-                    budget_target REAL,
-                    financial_goal TEXT,
-                    language TEXT,
-                    accent_color TEXT
-                )
-            ''')
-
             conn.commit()
             logger.info("Database initialized (SQLite Cache).")
     except Exception as e:

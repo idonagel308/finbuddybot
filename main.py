@@ -40,11 +40,13 @@ telegram_app = bot.get_application()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Handles startup and shutdown events."""
+    # Startup
     db.init_db()
     
-    # Cloud-Native Persistence
-    # (Removed heavy Sheets sync to speed up cold start boot times)
+    # Cloud-Native Persistence: Recover SQLite cache from Sheets in background
+    # This prevents blocking the port-bind health check on Cloud Run.
+    import threading
+    threading.Thread(target=db.sync_from_sheets, daemon=True).start()
 
     if telegram_app:
         await telegram_app.initialize()
