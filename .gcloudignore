@@ -32,6 +32,7 @@ __pycache__/
 
 # ── Block Logs & Debug ──
 *.txt
+!requirements.txt
 *.log
 debug_db.py
 list_models.py

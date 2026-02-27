@@ -30,6 +30,7 @@ __pycache__/
 
 # ── Block logs & Test Results ──
 *.txt
+!requirements.txt
 *.log
 final_results.txt
 test_results.txt
