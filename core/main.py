@@ -36,9 +36,7 @@ logger = logging.getLogger(__name__)
 _start_time = time.time()
 
 # ── Lifespan & Bot ──
-telegram_app = get_application()
-
-telegram_app = None
+telegram_app = None  # initialized in background task after yield
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
