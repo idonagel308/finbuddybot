@@ -8,33 +8,40 @@ The bot is designed to be highly secure, robust, and production-ready for deploy
 
 - **Natural Language Expense Logging**: Simply tell the bot what you spent, e.g., *"Spent 150 shekels on an Uber"* or *"שילמתי 80 שקל על קפה"*. The bot uses Google's Gemini AI to automatically parse the amount, category, and description.
 - **Auto-Categorization & Currency Conversion**: Automatically maps natural text to predefined categories (Food, Housing, Transport, etc.) and seamlessly converts foreign currencies (USD, EUR, GBP, etc.) to NIS using live exchange rates.
-- **AI Financial Insights**: Generates personalized, world-class financial advice based on your configured Wealth Profile (age, income, goals) and your recent spending patterns.
+- **AI Financial Insights**: Generates personalized financial advice based on your configured Wealth Profile (age, income, goals) and spending patterns. **Now supports full language-matching**; insights will be generated in your preferred language.
 - **Interactive Analytics Dashboard**: Access a rich, inline menu (`/menu`) within Telegram to view:
-  - Last expenses and monthly/yearly summaries.
-  - Beautiful, dynamic donut pie charts of your spending visually generated on the fly.
-  - Dedicated AI insights.
-- **Budgeting & Alerts**: Define a monthly budget (`/budget 5000`) and receive real-time alerts when you approach or exceed your target.
-- **Single-Tenant & Hardened Security**: Locks the bot to only answer to your specific Telegram User ID. The system is hardened against prompt-injection attacks and includes robust input validation.
+  - Last transactions with quick-undo and delete capabilities.
+  - Monthly/yearly summaries and dynamic spend-breakdown pie charts.
+  - Direct AI Insights button.
+- **Redesigned Settings Hub**: A centralized, inline settings menu (`/settings`) to manage your profile (Language, Currency, Budget, Age, Income, Goals) one field at a time with instant feedback—no tedious multi-step interviews.
+- **Performance Optimized**: Includes an in-process profile caching layer for ultra-fast translations and response times, even under high load.
+- **Google Sheets Integration**: Automatically mirrors every transaction to a secure Google Sheet for external auditing and visualization.
+- **Budgeting & Alerts**: Define a monthly budget and receive real-time alerts when you approach or exceed your target.
+- **Single-Tenant Security**: Hardened against prompt-injection and locked to the authorized Telegram User ID.
+
+## ⚙️ Project Mission (Phase 2) 🚀
+
+We are currently expanding the bot into a **Comprehensive Wealth Command Center**. See [mission.md](mission.md) for details on:
+- **Income Tracking**: Bidirectional cash flow monitoring (Revenue + Expenses).
+- **Interactive Web Dashboard**: A widget-based web app serving deep analytics, predictive trends, and modular financial widgets.
 
 ## ⚙️ Architecture & Core Components
 
-The project is built using a modern, secure, and robust Python stack:
-
 1. **Telegram User Interface (`bot.py`)**: 
-   Uses `python-telegram-bot` to handle asynchronous user interactions, inline keyboard callbacks, and command routing. It leverages `ConversationHandler` for smooth onboarding flows and is configured to receive events via webhook.
+   Uses `python-telegram-bot` to handle asynchronous interactions and inline keyboard callbacks. **Optimized for speed** with a thread-safe profile cache.
 2. **AI Inference Engine (`llm_helper.py`)**: 
-   Integrates with the `google.generativeai` SDK. It has a pre-filter system to quickly detect expenses and uses Gemini to securely extract JSON data, actively protecting against prompt injection attacks.
+   Integrates with Gemini AI. Features a logic-driven pre-filter and secure JSON extraction patterns to prevent prompt injection.
 3. **Database Layer (`database.py`)**: 
-   A lightweight, thread-safe SQLite database (`fintech.db`). It handles all CRUD operations for expenses, calculates aggregations, and stores the user's Wealth Profile and Budget limits securely.
+   A thread-safe SQLite database (`fintech.db`) handling all finance data, profile settings, and aggregations.
 4. **FastAPI Microservice (`main.py`)**: 
-   A hardened REST API built with `FastAPI`. It serves the `/webhook` endpoint for live Telegram updates and is fortified with strict API-Key security, CORS configurations, and IP-based rate limiting (`security.py`).
-5. **Live Currency & Logic (`currency.py`, `models.py`)**: 
-   `currency.py` fetches live exchange rates from APIs and parses symbols. `models.py` uses `pydantic` to enforce strict data validation schemas across the app.
+   Serves webhooks and provides a secure REST API for the upcoming Web Dashboard. Fortified with API-Key security and rate limiting.
+5. **ETL & Mirroring (`sheets_etl.py`)**: 
+   Handles non-blocking background sync of data to External Cloud Storage (Google Sheets).
 6. **Robust Testing Engine (`test_suite.py`)**:
-   A comprehensive test suite of over 140 passing unit and integration tests to guarantee the AI doesn't hallucinate data, prompt injections fail, and the core routing and database operations remain stable.
+   Contains over 140+ unit and integration tests to guarantee code Stability and AI accuracy.
 
 ## 🚀 Deployment
 
-FinTechBot is optimized for containerized production environments:
-- **Google Cloud Run**: Fully supported and configured for deployment as a serverless container. Listens securely for Telegram webhooks.
-- **Docker**: Includes a custom `Dockerfile` allowing for seamless containerized building and execution without local installation overhead.
+- **Google Cloud Run**: Fully configured for serverless deployment.
+- **Docker**: Custom `Dockerfile` included for seamless containerized execution.
+- **Continuous Integration**: Ready for Google Cloud Build with included `cloudbuild.yaml`.
