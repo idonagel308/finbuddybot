@@ -18,17 +18,10 @@ api_key = os.getenv("GOOGLE_API_KEY")
 import google.genai as genai
 from google.genai import types
 
-
-# Lazy singleton client — created once, reused across all calls
+# Lazy singleton client
 _client: genai.Client | None = None
 
 def _get_client() -> genai.Client | None:
-    """Returns a cached genai.Client. Creates it on first call.
-    
-    The new google.genai SDK is stateless — a single Client handles all
-    model calls. No GenerativeModel objects are created or cached.
-    Returns None if no API key is configured (triggers regex fallback).
-    """
     global _client
     if _client is None:
         if not api_key:
@@ -37,11 +30,10 @@ def _get_client() -> genai.Client | None:
         _client = genai.Client(api_key=api_key)
     return _client
 
-
-# Models to try in order of preference (primary → fallback)
+# Models to try in order of preference
 MODELS_TO_TRY = [
-    "gemini-2.5-flash",   # Primary
-    "gemini-1.5-flash",   # Fallback
+    "gemini-2.0-flash-lite", # Efficient and stable
+    "gemini-2.0-flash",      # Fallback
 ]
 
 ALLOWED_CATEGORIES = {
@@ -316,8 +308,8 @@ def generate_insights(
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.5,
-                    max_output_tokens=400,  # 100-word insight ≈ 130 tokens; hard cap prevents runaway
-                ),
+                    max_output_tokens=400,
+                )
             )
             return response.text.strip()
         except Exception as e:
@@ -358,12 +350,12 @@ def translate(text: str, target_language: str) -> str:
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash-lite',
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.0,
-                max_output_tokens=800,  # Enough for full-message translation
-            ),
+                max_output_tokens=800,
+            )
         )
         translated = response.text.strip()
         _translation_cache[cache_key] = translated
@@ -420,23 +412,17 @@ Examples:
         if client:
             for model_name in MODELS_TO_TRY:
                 try:
-                    try:
-                        response = client.models.generate_content(
-                            model=model_name,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                temperature=0.1,
-                            ),
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.1,
                         )
+                    )
 
-                        content = response.text.strip()
-                        if not content:
-                            logger.warning(f"Empty response from {model_name}. Candidates: {response.candidates}")
-                    except ValueError as e:
-                        logger.warning(f"ValueError extracting text from {model_name}: {e}. Candidates: {response.candidates}")
-                        continue
-                    except Exception as e:
-                        logger.warning(f"Exception from {model_name}: {e}")
+                    content = response.text.strip()
+                    if not content:
+                        logger.warning(f"Empty response from {model_name}")
                         continue
 
                     try:
@@ -473,7 +459,7 @@ Examples:
 
                 except Exception as e:
                     error_str = str(e)
-                    logger.warning(f"parse_expense: {model_name}: {type(e).__name__}")
+                    logger.warning(f"parse_expense: {model_name}: {type(e).__name__} - {error_str}")
                     if "429" in error_str or "exhausted" in error_str.lower():
                         time.sleep(1)
                     continue
@@ -485,57 +471,52 @@ Examples:
         return {"status": "not_transaction"}
 
     text_lower = safe_text.lower()
-    words = set(re.sub(r'[.,!?()]', '', text_lower).split())
-    # Determine type fallback using signals
-    tx_type = 'income' if bool(words & _STRONG_INCOME_SIGNALS) else 'expense'
-
-    # Pattern 1: Number + text (e.g. "50 pizza", "30 שקל")
-    match = re.search(r'(\d+(?:\.\d+)?)\s*([a-zA-Z\u0590-\u05FF\s]+)', text_lower)
-    if match:
-        amount = float(match.group(1))
-        if 0 < amount <= MAX_AMOUNT:
-            raw_text = match.group(2).strip()
-            clean_category = re.sub(
-                r'^(on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|ב-?|על|של|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|עלה|עלתה|עולה)\s*',
-                '', raw_text, flags=re.IGNORECASE
-            ).strip()
-            if clean_category and _map_category(clean_category) != 'Other':
-                result = _apply_currency_conversion({
-                    "amount": amount,
-                    "type": tx_type,
-                    "category": _map_category(clean_category),
-                    "description": clean_category
-                }, text)
-                result["status"] = "success"
-                return result
-            elif clean_category:
-                # Has number + text but we can't map category
-                return {"status": "no_category", "amount": amount, "text": clean_category}
-
-    # Pattern 2: Text + number (e.g. "pizza 50")
-    match2 = re.search(r'([a-zA-Z\u0590-\u05FF\s]+)\s*(\d+(?:\.\d+)?)', text_lower)
-    if match2:
-        raw_text = match2.group(1).strip()
-        amount = float(match2.group(2))
-        if 0 < amount <= MAX_AMOUNT:
-            mapped = _map_category(raw_text)
-            if mapped != 'Other':
-                result = _apply_currency_conversion({
-                    "amount": amount,
-                    "type": tx_type,
-                    "category": mapped,
-                    "description": raw_text
-                }, text)
-                result["status"] = "success"
-                return result
-            else:
-                return {"status": "no_category", "amount": amount, "text": raw_text}
-
-    # Has a number but we couldn't extract anything meaningful
-    if re.search(r'\d', safe_text):
+    
+    # Extract all numbers from the text
+    numbers = re.findall(r'\b\d+(?:\.\d+)?\b', text_lower.replace('-', ''))
+    if not numbers:
+        return {"status": "no_category"}
+        
+    amount = float(numbers[0])
+    if amount <= 0 or amount > MAX_AMOUNT:
         return {"status": "no_category"}
 
-    return {"status": "not_transaction"}
+    # Determine type fallback using signals
+    words_set = set(re.sub(r'[.,!?()]', '', text_lower).split())
+    tx_type = 'income' if bool(words_set & _STRONG_INCOME_SIGNALS) else 'expense'
+
+    # Remove the amount string from the text to get the description
+    desc_text = re.sub(rf'\b{amount}\b|\b{int(amount)}\b', '', text_lower, count=1).strip()
+    
+    # Strip common filler/currency words
+    desc_cleaned = re.sub(
+        r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|עלה|עלתה|עולה)\b',
+        '', desc_cleaned, flags=re.IGNORECASE
+    ) if 'desc_cleaned' in locals() else re.sub(
+        r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|עלה|עלתה|עולה)\b',
+        '', desc_text, flags=re.IGNORECASE
+    )
+    
+    # Strip common Hebrew prepositions (ב-, על, של, ל-)
+    desc_cleaned = re.sub(r'\b(?:ב|על|של|ל)-?\b', '', desc_cleaned).strip()
+    
+    # Clean up multiple spaces and dashes
+    desc_cleaned = re.sub(r'[-\s]+', ' ', desc_cleaned).strip()
+    
+    if not desc_cleaned:
+        desc_cleaned = "Expense"
+
+    mapped_category = _map_category(desc_cleaned)
+    
+    # Always succeed if we got an amount and description, even if category is Other
+    result = _apply_currency_conversion({
+        "amount": amount,
+        "type": tx_type,
+        "category": mapped_category,
+        "description": desc_cleaned
+    }, text)
+    result["status"] = "success"
+    return result
 
 
 # Pre-built category mapping — O(1) lookup instead of O(n) scan

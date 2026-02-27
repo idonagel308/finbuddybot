@@ -80,6 +80,68 @@ def run_background_task(target, *args, **kwargs):
 
     threading.Thread(target=wrapper, daemon=True).start()
 
+def sync_from_sheets(user_id: int = None, limit: int = 100):
+    """
+    Syncs the latest expenses from Google Sheets into the SQLite database.
+    This acts as a cold-start recovery mechanism.
+    """
+    if not sheets_etl:
+        logger.warning("sheets_etl module not loaded. Skipping Sheets sync.")
+        return
+        
+    try:
+        sheet = sheets_etl._get_sheet()
+        if not sheet:
+            logger.warning("Could not get sheet for sync.")
+            return
+            
+        # Get all records, ignoring the header row
+        records = sheet.get_all_values()[1:]
+        if not records:
+            return
+            
+        # Optional: filter by user and slice
+        if user_id:
+            records = [r for r in records if len(r) > 1 and str(r[1]) == str(user_id)]
+            
+        # Take the most recent `limit` rows (assuming appended at the bottom)
+        records = records[-limit:]
+        
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            for row in records:
+                try:
+                    # Expected: ID, User ID, Date, Amount, Category, Description
+                    if len(row) < 5:
+                        continue
+                        
+                    # Sheet might not have the ID if manual, but let's just insert
+                    r_uid = int(row[1])
+                    r_date = row[2]
+                    r_amt = float(row[3].replace(',', '').replace('₪', '').strip())
+                    r_cat = row[4]
+                    r_desc = row[5] if len(row) > 5 else ""
+                    
+                    # Insert if it doesn't already exist (rough deduplication)
+                    cursor.execute('''
+                        SELECT 1 FROM expenses 
+                        WHERE user_id = ? AND date = ? AND amount = ? AND category = ?
+                    ''', (r_uid, r_date, r_amt, r_cat))
+                    if not cursor.fetchone():
+                        cursor.execute('''
+                            INSERT INTO expenses (user_id, date, amount, category, type, description)
+                            VALUES (?, ?, ?, ?, 'expense', ?)
+                        ''', (r_uid, r_date, r_amt, r_cat, r_desc))
+                except Exception as row_error:
+                    logger.warning(f"Failed to sync row from sheets: {row} - {row_error}")
+            
+            conn.commit()
+            logger.info(f"Successfully synced up to {len(records)} recent expenses from Sheets.")
+            
+    except Exception as e:
+        logger.error(f"Failed to sync from sheets: {e}")
+
+
 _local = threading.local()
 
 

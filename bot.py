@@ -74,6 +74,19 @@ def _display_category(category: str) -> str:
     emoji = CATEGORY_EMOJI.get(category, '❓')
     return f"{emoji} {category}"
 
+def _get_category_keyboard() -> InlineKeyboardMarkup:
+    """Returns a grid of category buttons for manual selection."""
+    main_cats = ['Food', 'Transport', 'Shopping', 'Entertainment', 'Housing', 'Health', 'Education', 'Other']
+    buttons = []
+    # 2 columns per row
+    for i in range(0, len(main_cats), 2):
+        row = []
+        for cat in main_cats[i:i+2]:
+            row.append(InlineKeyboardButton(_display_category(cat), callback_data=f'cat_select_{cat}'))
+        buttons.append(row)
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data='cancel_cat_select')])
+    return InlineKeyboardMarkup(buttons)
+
 
 # ── Profile Cache ──
 # Caches db.get_profile results in-process for PROFILE_CACHE_TTL seconds.
@@ -260,9 +273,20 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=Non
                 new_row = []
                 for btn in row:
                     tr_text = await asyncio.to_thread(llm_helper.translate, btn.text, target_lang)
-                    new_row.append(InlineKeyboardButton(tr_text, callback_data=btn.callback_data))
+                    if asyncio.iscoroutine(tr_text):
+                        tr_text = await tr_text
+                    # Property Preservation: Copy all relevant attributes from the original button
+                    button_kwargs = {'text': tr_text}
+                    for attr in ['callback_data', 'url', 'web_app', 'login_url', 'switch_inline_query', 'switch_inline_query_current_chat']:
+                        val = getattr(btn, attr, None)
+                        if val:
+                            button_kwargs[attr] = val
+                    new_row.append(InlineKeyboardButton(**button_kwargs))
                 new_kb.append(new_row)
             reply_markup = InlineKeyboardMarkup(new_kb)
+
+    if not isinstance(text, str):
+        text = await text if asyncio.iscoroutine(text) else str(text)
 
     if len(text) > TELEGRAM_MAX_LENGTH:
         text = text[:TELEGRAM_MAX_LENGTH - 20] + "\n\n_(truncated)_"
@@ -774,6 +798,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="⚠️ Error updating currency. Please try again.")
         return
 
+    # Handle category selection callbacks
+    if data.startswith("cat_select_"):
+        cat_name = data[11:]
+        pending = context.user_data.get('pending_expense')
+        if not pending:
+            await query.edit_message_text(
+                text="⚠️ Session expired or invalid category selection. Please send the expense again.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
+            )
+            return
+
+        amount = pending['amount']
+        description = pending['description']
+
+        # Save to Database
+        await asyncio.to_thread(db.add_expense, telegram_id, amount, cat_name, description)
+        context.user_data.pop('pending_expense', None)
+
+        safe_desc = _escape_markdown(description)
+        response_text = (
+            f"✅ *Expense Saved!*\n\n"
+            f"💰 Amount: 🔴 *₪{amount:.2f}*\n"
+            f"📂 Category: {_display_category(cat_name)}\n"
+            f"📝 Details: _{safe_desc}_\n\n"
+            f"Use /menu to see your dashboard."
+        )
+        reply_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("↩️ Undo", callback_data='undo_last'), InlineKeyboardButton("📊 Dashboard", callback_data='back_to_menu')]
+        ])
+        await query.edit_message_text(text=response_text, parse_mode='Markdown', reply_markup=reply_markup)
+        return
+
+    if data == 'cancel_cat_select':
+        context.user_data.pop('pending_expense', None)
+        await query.edit_message_text(
+            text="❌ Expense cancelled.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
+        )
+        return
+
     # Validate other callback data against whitelist
     if data not in VALID_CALLBACKS:
         logger.warning(f"Invalid callback data from user {telegram_id}: rejected")
@@ -1242,13 +1306,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 response_text = "⚠️ *Error*: Could not extract amount or category."
 
         elif status == 'no_category':
-            # We found a number but couldn't figure out what it was for
+            # We found a number but couldn't figure out the exact category map. Prompt with a keyboard!
             amt = expense_data.get('amount')
+            desc = expense_data.get('text', user_text)  # the raw extracted string or full text
+            
             if amt:
-                response_text = (
-                    f"🔢 Got *₪{amt:.0f}* but I'm not sure what it was for.\n"
-                    f"Try: *\"₪{amt:.0f} on food\"* or *\"{amt:.0f} taxi\"*"
-                )
+                # Save pending state
+                context.user_data['pending_expense'] = {"amount": float(amt), "description": desc}
+                
+                response_text = f"🔢 Got *₪{amt:.2f}*.\n\nPlease pick a category for _{_escape_markdown(desc)}_:"
+                reply_markup = _get_category_keyboard()
             else:
                 response_text = "🔢 I see a number but couldn't figure out the category.\nTry: *\"Spent 50 on food\"*"
 
@@ -1317,6 +1384,20 @@ def get_application():
     application.add_handler(CommandHandler('deleteall', deleteall_command))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # ── Post-Initialization: Persistent Keyboard Menu Button ──
+    async def post_init(application):
+        from telegram import MenuButtonWebApp, WebAppInfo
+        webapp_url = os.getenv("WEBAPP_URL", "http://localhost:8000/webapp")
+        await application.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="📊 Dashboard",
+                web_app=WebAppInfo(url=webapp_url)
+            )
+        )
+        logger.info(f"Persistent WebApp Menu Button configured: {webapp_url}")
+
+    application.post_init = post_init
 
     return application
 

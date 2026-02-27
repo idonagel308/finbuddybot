@@ -1,7 +1,7 @@
 # FinTechBot: Phase 3 Mission — The Secure Environment 🔐
 
 ## Executive Summary
-Convert the interactive Web Dashboard from a prototype into a production-grade **Secure Financial Environment**. Phase 3 focuses on **Zero-Trust Architecture**: ensuring data privacy through Telegram's official HMAC authentication, user isolation, and permanent synchronization of AI insights and UI preferences.
+Convert the interactive Web Dashboard from a prototype into a production-grade **Secure Financial Environment**. Phase 3 focuses on **Zero-Trust Architecture**, **SDK Stability**, and **Input Accuracy**: ensuring data privacy through Telegram's official HMAC authentication, restoring reliability via the legacy Gemini SDK, and perfecting natural language understanding for financial entries.
 
 ---
 
@@ -29,8 +29,14 @@ Move from browser-only `localStorage` to persistent database storage for a "seam
 
 ### 4. Advanced Historical Analysis
 utilize the dashboard's "Time Period" controls for more than just aesthetics.
-- **Real-Time Pacing:** Replace mock "Pulse" data with real day-by-day cumulative spending for the selected month.
+  - **Real-Time Pacing:** Replace mock "Pulse" data with real day-by-day cumulative spending for the selected month.
 - **Year-Over-Year View:** Implement a "Years" view that compares the current year's net flow vs. previous years.
+
+### 5. SDK Stability & Intelligence Audit
+Ensure the bot understands the user and remains stable.
+- **Legacy SDK Restoration:** Revert and lock the system to `google-generativeai` (legacy Gemini SDK) to prevent breaking changes from the new SDK.
+- **Natural Language Audit:** Verify the bot correctly extracts amounts, categories, and types (income vs expense) from complex conversational inputs.
+- **Error Handling:** Implement graceful fallbacks for LLM rate limits or connection failures.
 
 ---
 
@@ -50,9 +56,16 @@ utilize the dashboard's "Time Period" controls for more than just aesthetics.
 - [ ] Refactor "The Pulse" data aggregator to provide real daily expenditure sums.
 - [ ] Perform a "Deep Audit" of the `expenses` table to ensure category mapping is 100% consistent between the Bot UI and Web UI.
 
+### Step 4: Intelligence & Stability Restoration
+- [ ] Revert and lock `google-generativeai` in `requirements.txt`.
+- [ ] Audit `llm_helper.py` classification logic to ensure 95%+ accuracy.
+- [ ] Run comprehensive input tests (English & Hebrew) to verify extraction reliability.
+
 ---
 
 ## ✅ Success Metrics
 1. **User B cannot see User A's data**, even if they know their ID.
 2. **Settings persist** if the user clears their browser cache.
 3. **AI Insights** generated in the Telegram chat appear instantly on the Web Dashboard for the correct month.
+4. **95%+ Input Accuracy** on complex, natural language transaction entries without system crashes.
+5. **Legacy SDK Locked** and functional without `google-genai` conflicts.

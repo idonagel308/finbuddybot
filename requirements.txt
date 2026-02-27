@@ -1,5 +1,5 @@
 # FinTechBot Dependencies
-# Updated for reliable Cloud Run containerization
+# Updated for reliable Cloud Run containerization and reverted to legacy Gemini SDK
 
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0
