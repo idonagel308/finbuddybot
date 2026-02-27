@@ -5,7 +5,11 @@ import threading
 import os
 from datetime import datetime
 from contextlib import contextmanager
-import sheets_etl
+try:
+    import sheets_etl
+except ImportError:
+    sheets_etl = None
+    logging.warning("Sheets ETL not available. Sync disabled.")
 
 
 # Configure logging
@@ -19,7 +23,8 @@ MAX_AMOUNT = 1_000_000  # Maximum single expense amount
 MAX_DESCRIPTION_LENGTH = 200
 ALLOWED_CATEGORIES = {
     'Housing', 'Food', 'Transport', 'Entertainment',
-    'Shopping', 'Health', 'Education', 'Financial', 'Other'
+    'Shopping', 'Health', 'Education', 'Financial', 'Other',
+    'Salary', 'Investment', 'Gift'
 }
 
 
@@ -86,6 +91,31 @@ def init_db():
                 )
             ''')
 
+            # 5. Insights Table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS insights (
+                    user_id BIGINT,
+                    year INTEGER,
+                    month INTEGER,
+                    content TEXT,
+                    timestamp TEXT,
+                    PRIMARY KEY (user_id, year, month)
+                )
+            ''')
+
+            # 6. User Dashboard Settings
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    theme TEXT,
+                    layout TEXT,
+                    budget_target REAL,
+                    financial_goal TEXT,
+                    language TEXT,
+                    accent_color TEXT
+                )
+            ''')
+
             # Local Migration helpers
             try: cursor.execute("ALTER TABLE expenses ADD COLUMN type TEXT NOT NULL DEFAULT 'expense'")
             except: pass
@@ -97,6 +127,43 @@ def init_db():
             except: pass
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
             except: pass
+            
+            # Insights table migration (create if not exists)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS insights (
+                    user_id BIGINT,
+                    year INTEGER,
+                    month INTEGER,
+                    content TEXT,
+                    timestamp TEXT,
+                    PRIMARY KEY (user_id, year, month)
+                )
+            ''')
+
+            # 6. User Settings Table (Phase 3)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    theme TEXT DEFAULT 'dark',
+                    accent_color TEXT DEFAULT 'indigo',
+                    layout JSON,
+                    budget_target REAL DEFAULT 0,
+                    updated_at TEXT
+                )
+            ''')
+            
+            # Settings table migration
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id BIGINT PRIMARY KEY,
+                    theme TEXT,
+                    layout TEXT,
+                    budget_target REAL,
+                    financial_goal TEXT,
+                    language TEXT,
+                    accent_color TEXT
+                )
+            ''')
 
             conn.commit()
             logger.info("Database initialized (SQLite Cache).")
@@ -147,7 +214,8 @@ def add_expense(user_id: int, amount: float, category: str, description: str = "
             logger.info(f"Added {transaction_type} {inserted_id} for user {user_id}")
             
             # Mirror to Sheets in background
-            threading.Thread(target=sheets_etl.append_expense, args=(inserted_id, user_id, date_str, amount, category, description)).start()
+            if sheets_etl:
+                threading.Thread(target=sheets_etl.append_expense, args=(inserted_id, user_id, date_str, amount, category, description)).start()
             
             return inserted_id
     except Exception as e:
@@ -326,7 +394,8 @@ def delete_expense(user_id: int, expense_id: int) -> bool:
             success = cursor.rowcount > 0
             if success:
                 # Mirror to Sheets in background
-                threading.Thread(target=sheets_etl.delete_expense, args=(expense_id,)).start()
+                if sheets_etl:
+                    threading.Thread(target=sheets_etl.delete_expense, args=(expense_id,)).start()
                 
             return success
     except Exception as e:
@@ -442,6 +511,150 @@ def get_profile(user_id: int) -> dict | None:
         return None
 
 
+# ── AI Insights Persistence ──
+
+def save_insight(user_id: int, year: int, month: int, content: str):
+    """Saves a generated AI insight to the database."""
+    _validate_user_id(user_id)
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            ts = datetime.now().isoformat()
+            cursor.execute('''
+                INSERT OR REPLACE INTO insights (user_id, year, month, content, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, year, month, content, ts))
+            conn.commit()
+            logger.info(f"Saved AI insight for user {user_id} ({year}-{month:02})")
+    except Exception as e:
+        logger.error(f"Error saving insight: {e}")
+
+
+def get_insight(user_id: int, year: int, month: int) -> str | None:
+    """Retrieves a cached AI insight from the database."""
+    _validate_user_id(user_id)
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT content FROM insights 
+                WHERE user_id = ? AND year = ? AND month = ?
+            ''', (user_id, year, month))
+            row = cursor.fetchone()
+            return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Error fetching insight: {e}")
+        return None
+
+
+# ── User Dashboard & Pulse Aggregations (Phase 3) ──
+
+
+
+# ── User Dashboard Settings ──
+
+def save_user_settings(user_id: int, theme: str = None, layout: str = None, budget_target: float = None, financial_goal: str = None, language: str = None, accent_color: str = None):
+    """Saves or updates user-specific dashboard preferences."""
+    _validate_user_id(user_id)
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            # Perform a multi-step update to preserve existing values if some are passed as None
+            cursor.execute('''
+                INSERT INTO user_settings (user_id, theme, layout, budget_target, financial_goal, language, accent_color)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    theme = COALESCE(?, theme),
+                    layout = COALESCE(?, layout),
+                    budget_target = COALESCE(?, budget_target),
+                    financial_goal = COALESCE(?, financial_goal),
+                    language = COALESCE(?, language),
+                    accent_color = COALESCE(?, accent_color)
+            ''', (user_id, theme, layout, budget_target, financial_goal, language, accent_color,
+                  theme, layout, budget_target, financial_goal, language, accent_color))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving user settings: {e}")
+
+def get_user_settings(user_id: int) -> dict:
+    """Retrieves user-specific dashboard preferences as a dictionary."""
+    _validate_user_id(user_id)
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT theme, layout, budget_target, financial_goal, language, accent_color FROM user_settings WHERE user_id = ?', (user_id,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "theme": row[0],
+                    "layout": row[1],
+                    "budget_target": row[2],
+                    "financial_goal": row[3],
+                    "language": row[4],
+                    "accent_color": row[5]
+                }
+            return {}
+    except Exception as e:
+        logger.error(f"Error fetching user settings: {e}")
+        return {}
+
+
+def get_daily_aggregation(user_id: int, year: int = None, month: int = None):
+    """
+    Returns day-by-day cumulative totals for the Pulse chart.
+    Returns: { "labels": [...], "income": [...], "expenses": [...] }
+    """
+    _validate_user_id(user_id)
+    start, end = _month_range(year, month)
+    
+    # Calculate days in month
+    import calendar
+    dt_start = datetime.fromisoformat(start)
+    _, last_day = calendar.monthrange(dt_start.year, dt_start.month)
+    
+    labels = [str(d) for d in range(1, last_day + 1)]
+    income_series = [0.0] * last_day
+    expense_series = [0.0] * last_day
+
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            # Fetch sums per day
+            cursor.execute('''
+                SELECT CAST(strftime('%d', date) AS INTEGER) as day, type, SUM(amount)
+                FROM expenses
+                WHERE user_id = ? AND date >= ? AND date < ?
+                GROUP BY day, type
+            ''', (user_id, start, end))
+            
+            for day, t_type, total in cursor.fetchall():
+                day_idx = day - 1
+                if day_idx < last_day:
+                    if t_type == 'income':
+                        income_series[day_idx] = total
+                    else:
+                        expense_series[day_idx] = total
+            
+            # Convert to cumulative sums
+            curr_inc = 0.0
+            curr_exp = 0.0
+            for i in range(last_day):
+                curr_inc += income_series[i]
+                curr_exp += expense_series[i]
+                income_series[i] = round(curr_inc, 2)
+                expense_series[i] = round(curr_exp, 2)
+                
+            return {
+                "labels": labels,
+                "income": income_series,
+                "expenses": expense_series
+            }
+            
+    except Exception as e:
+        logger.error(f"Error in daily aggregation: {e}")
+        return {"labels": [], "income": [], "expenses": []}
+
+
 def delete_all_expenses(user_id: int) -> int:
     """Deletes ALL expenses (local only, user must wipe Sheets manually or we can batch delete)."""
     try:
@@ -496,7 +709,10 @@ def _sync_local_to_sheets_for_user(user_id: int):
             formatted.append([r[0], r[1], r[2], r[3], r[4], r[5], r[6] or ""])
             
         # Background thread so the Telegram UI doesn't hang
-        threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
+        if sheets_etl:
+            threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
+        else:
+            logger.info(f"Skipping wholesale sync for user {user_id} (Sheets ETL disabled)")
         logger.info(f"Triggered background wholesale sync for user {user_id}")
     except Exception as e:
         logger.error(f"Failed to initiate wholesale sync: {e}")
@@ -508,6 +724,10 @@ def sync_from_sheets():
     """
     logger.info("Initializing Cold Start Recovery from Sheets...")
     try:
+        if not sheets_etl:
+            logger.info("Sync from Sheets skipped (ETL module missing or disabled).")
+            return
+        
         sheets_data = sheets_etl.fetch_all_data()
         if not sheets_data:
             logger.info("No data found in Sheets or unable to connect. Proceeding with empty/existing local cache.")

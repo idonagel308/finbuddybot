@@ -62,6 +62,7 @@ CATEGORY_EMOJI = {
     'Housing': '🏠', 'Food': '🍔', 'Transport': '🚗',
     'Entertainment': '🎉', 'Shopping': '🛍️', 'Health': '❤️',
     'Education': '📚', 'Financial': '💸', 'Other': '❓',
+    'Salary': '💼', 'Investment': '📈', 'Gift': '🎁',
 }
 
 
@@ -348,7 +349,13 @@ def _private_only(func):
 
 def _get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """Returns the primary dashboard inline keyboard."""
+    
+    # URL of your mounted FastAPI static webapp (can be configurable via .env in production)
+    from telegram import WebAppInfo
+    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+    
     keyboard = [
+        [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
         [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
         [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
         [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')],
@@ -390,6 +397,26 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     await _safe_send(context.bot, update.effective_chat.id, '📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(), parse_mode='Markdown')
+
+
+@_private_only
+async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Directly opens the Web App Dashboard."""
+    if not update.message:
+        return
+    
+    from telegram import WebAppInfo
+    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+    keyboard = [[InlineKeyboardButton("Open Dashboard", web_app=WebAppInfo(url=webapp_url))]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await _safe_send(
+        context.bot, 
+        update.effective_chat.id, 
+        "🚀 *Launch your Interactive Dashboard below:*", 
+        reply_markup=reply_markup, 
+        parse_mode='Markdown'
+    )
 
 
 @_private_only
@@ -789,7 +816,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'back_to_menu':
+            from telegram import WebAppInfo
+            webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
             keyboard = [
+                [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
                 [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
                 [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
                 [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')],
@@ -797,25 +827,55 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(text='📊 *My Finances Dashboard:*', reply_markup=reply_markup, parse_mode='Markdown')
 
-        elif data == 'this_month':
-            expenses = await asyncio.to_thread(db.get_monthly_expenses, user_id=telegram_id)
-            if not expenses:
-                text = "📅 No expenses this month."
-                await query.edit_message_text(text=text, parse_mode='Markdown')
-            else:
-                total = sum(e[2] for e in expenses)
+        elif data == 'this_month' or data.startswith('month_'):
+            if data == 'this_month':
                 now = datetime.now()
-                month_name = now.strftime('%B %Y')
-                text = f"📅 *{month_name}*\n💰 *Total: ₪{total:,.2f}*\n\n"
-                for exp in expenses:
-                    date_short = exp[1][5:10]
-                    text += f"• `{date_short}`: *₪{exp[2]:,.2f}* - {_display_category(exp[3])}\n"
-                buttons = [
-                    [InlineKeyboardButton("🗑️ Delete All This Month", callback_data='delete_all_monthly')],
-                    [InlineKeyboardButton("⬅️ Back", callback_data='monthly_list')],
-                ]
-                reply_markup = InlineKeyboardMarkup(buttons)
-                await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
+                year, month = now.year, now.month
+            else:
+                _, y_str, m_str = data.split('_')
+                year, month = int(y_str), int(m_str)
+
+            spent, income = await asyncio.to_thread(db.get_monthly_summary, telegram_id, year, month)
+            budget = await asyncio.to_thread(db.get_budget, telegram_id)
+            net = income - spent
+
+            MONTH_NAMES = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+                           'July', 'August', 'September', 'October', 'November', 'December']
+
+            text = f"📅 *{MONTH_NAMES[month]} {year}*\n\n"
+            text += f"📥 *Income:* 🟢 ₪{income:,.2f}\n"
+            text += f"📤 *Expenses:* 🔴 ₪{spent:,.2f}\n"
+            text += f"🧮 *Net Flow:* ₪{net:,.2f}\n\n"
+
+            if budget and data == 'this_month':
+                pct = (spent / budget) * 100
+                bar_len = 10
+                filled = min(bar_len, int((pct / 100) * bar_len))
+                bar = "▮" * filled + "▯" * (bar_len - filled)
+                text += f"📊 *Budget:* [{bar}] {pct:.0f}%\n"
+                text += f"_(₪{spent:,.2f} of ₪{budget:,.2f})_\n\n"
+
+            text += "🔽 *Recent Transactions:*\n"
+            
+            expenses = await asyncio.to_thread(db.get_monthly_expenses, telegram_id, year, month)
+            if not expenses:
+                text += "_No transactions logged._"
+            else:
+                for exp in expenses[:5]:
+                    d_str = _format_date(exp[1])
+                    icon = "🟢" if exp[5] == "income" else "🔴"
+                    cat = _display_category(exp[3])
+                    desc = f" — _{_escape_markdown(exp[4])}_" if exp[4] else ""
+                    text += f"• {d_str} | {cat}: {icon} ₪{exp[2]:.0f}{desc}\n"
+
+            buttons = [
+                [InlineKeyboardButton("🗑️ Delete All This Month", callback_data='delete_all_monthly')],
+                [InlineKeyboardButton("⬅️ Back", callback_data='monthly_list')],
+            ] if data == 'this_month' else [
+                [InlineKeyboardButton("⬅️ Back to Year", callback_data='year_overview')]
+            ]
+            reply_markup = InlineKeyboardMarkup(buttons)
+            await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
 
         elif data == 'year_overview':
             now = datetime.now()
@@ -872,12 +932,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text="📉 No valid data for a chart.")
                 return
 
-            await query.edit_message_text(text="📊 *Generating your chart...*", parse_mode='Markdown')
+            await query.edit_message_text(text="📊 *Generating Expense Breakdown...*", parse_mode='Markdown')
 
             # Create pie chart
             chart_buf = await asyncio.to_thread(_generate_pie_chart, totals, total_sum)
 
-            caption = f"📊 *Spending Breakdown*\n💰 *Total: ₪{total_sum:,.2f}*\n\n"
+            caption = f"📊 *Expense Breakdown*\n🔴 *Total Spent: ₪{total_sum:,.2f}*\n\n"
             for cat, amt in sorted(totals.items(), key=lambda x: x[1], reverse=True):
                 pct = (amt / total_sum) * 100
                 caption += f"• {_display_category(cat)}: ₪{amt:,.2f} ({pct:.0f}%)\n"
@@ -932,6 +992,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not insight or "⚠️" in insight:
                     await query.edit_message_text(text="⚠️ *AI Engine Unavailable*\n\nCould not generate insights at this time.", parse_mode='Markdown')
                     return
+
+                # SAVE for WebApp Sync
+                now = datetime.now()
+                await asyncio.to_thread(db.save_insight, telegram_id, now.year, now.month, insight)
 
                 safe_insight = _escape_markdown(insight)
                 await query.edit_message_text(text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", parse_mode='Markdown')
@@ -1131,9 +1195,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # Escape description for safe Markdown display
                 safe_desc = _escape_markdown(description)
+                type_icon = "🟢" if status == 'success' and expense_data.get('type') == 'income' else "🔴"
+                word = "Income" if type_icon == "🟢" else "Expense"
+                
                 response_text = (
-                    f"✅ *Expense Saved!*\n\n"
-                    f"💰 Amount: *₪{amount:.2f}*\n"
+                    f"✅ *{word} Saved!*\n\n"
+                    f"💰 Amount: {type_icon} *₪{amount:.2f}*\n"
                     f"📂 Category: {_display_category(category)}\n"
                     f"📝 Details: _{safe_desc}_\n"
                 )
@@ -1149,14 +1216,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 response_text += "\nUse /menu to see your dashboard."
 
-                # Budget check
-                budget = await asyncio.to_thread(db.get_budget, user_id)
-                if budget:
-                    total, _ = await asyncio.to_thread(db.get_monthly_summary, user_id)
-                    if total > budget:
-                        response_text += f"\n\n🚨 *Budget alert!* You've spent {total:.0f}/{budget:.0f}"
-                    elif total > budget * 0.8:
-                        response_text += f"\n\n⚠️ *Heads up:* {total:.0f}/{budget:.0f} spent (80%+ of budget)"
+                # === Budget / Goal Smart Notification ===
+                if expense_data.get('type') == 'income':
+                    profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                    goal = profile.get('additional_info') if profile else None
+                    if goal:
+                        response_text += f"\n🎯 *Progress!* You're one step closer to: _{_escape_markdown(goal)}_"
+                else:
+                    budget = await asyncio.to_thread(db.get_budget, user_id)
+                    if budget:
+                        spent_this_month, _ = await asyncio.to_thread(db.get_monthly_summary, user_id)
+                        pct = (spent_this_month / budget) * 100
+                        
+                        bar_len = 10
+                        filled = min(bar_len, int((pct / 100) * bar_len))
+                        bar = "▮" * filled + "▯" * (bar_len - filled)
+                        
+                        response_text += f"\n📊 *Budget:* [{bar}] {pct:.0f}%\n"
+
+                        if pct >= 100:
+                            response_text += "🚨 *Warning: You have exceeded your monthly budget!*"
+                        elif pct >= 80:
+                            response_text += "⚠️ *Careful: You have used over 80% of your budget.*"
             else:
                 response_text = "⚠️ *Error*: Could not extract amount or category."
 
@@ -1228,6 +1309,7 @@ def get_application():
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('menu', menu_command))
+    application.add_handler(CommandHandler('dashboard', dashboard_command))
     application.add_handler(CommandHandler('settings', settings_command))
     application.add_handler(CommandHandler('undo', undo_command))
     application.add_handler(CommandHandler('budget', budget_command))

@@ -1,9 +1,14 @@
 # Environment & Secrets
 .env
 keys.txt
+service_account.json
+credentials.json
 
 # Database
 *.db
+finance.db
+fintech.db
+fintech_test.db
 
 # Python
 __pycache__/
@@ -13,10 +18,15 @@ __pycache__/
 dist/
 build/
 *.egg
+venv/
+.venv/
+.pytest_cache/
 
-# Debug utilities (should not be in production)
+# Debug & Logs
 debug_db.py
 list_models.py
+*.txt
+*.log
 
 # IDE
 .vscode/
@@ -28,12 +38,7 @@ list_models.py
 Thumbs.db
 .DS_Store
 
-.env
-venv/
-.venv/
-__pycache__/
-finance.db
-*.json
-# sheets api 
-
-
+# Web & Node (if applicable)
+node_modules/
+.next/
+dist/

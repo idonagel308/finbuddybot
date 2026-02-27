@@ -1,20 +1,22 @@
-# .dockerignore — Cloud Build Security Policy
-# This file prevents sensitive local data from being uploaded to Google Cloud during deployment.
+# .dockerignore — Phase 3 Secure Policy
 
 # ── Block Environment & Credentials ──
 .env
 .env.yaml
 GOOGLE_APPLICATION_CREDENTIALS
-# Explicitly block JSON keys to prevent identity leakage (Cloud Run uses ADC anyway)
+service_account.json
+credentials.json
 *.json
-!requirements.json  # Example: keep if you have non-secret JSON
+!requirements.json
+!package.json
 
-# ── Block Local Databases (Persistent Data) ──
+# ── Block Databases ──
 *.db
 *.sqlite
 *.sqlite3
 fintech.db
-.db/
+fintech_test.db
+finance.db
 
 # ── Block Python Environment & Cache ──
 .venv/
@@ -24,6 +26,13 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+
+# ── Block logs & Test Results ──
+*.txt
+*.log
+final_results.txt
+test_results.txt
 
 # ── Block IDEs & System Metadata ──
 .vscode/
@@ -32,18 +41,12 @@ __pycache__/
 .git/
 .gitignore
 .dockerignore
+.gcloudignore
 Dockerfile
+cloudbuild.yaml
 
 # ── Block Agent Workspace ──
 .agent/
 .gemini/
-
-# ── Block Development Scripts ──
-tests/
-scripts/
-test_webhook.py
-verify_recovery.py
-pre_cloud_final_check.py
-final_security_audit.py
-test_suite_results.txt
-GoogleCloudSDKInstaller.exe
+.brain/
+brain/

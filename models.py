@@ -23,6 +23,9 @@ ALLOWED_CATEGORIES = {
     'Education',
     'Financial',
     'Other',
+    'Salary',
+    'Investment',
+    'Gift',
 }
 
 MAX_AMOUNT = 1_000_000

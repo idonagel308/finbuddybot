@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FinTechBot Dashboard</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap"
+        rel="stylesheet">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="theme-dark">
+    <div class="background-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <main class="dashboard">
+        <header class="header">
+            <div class="greeting">
+                <h1>Hello, Ido 👋</h1>
+                <p>Welcome to your personal command center.</p>
+            </div>
+            <div class="header-actions">
+                <div class="net-worth-badge">
+                    <span class="label">Net Cash Flow</span>
+                    <span class="amount" id="net-cash-flow">₪0.00</span>
+                </div>
+                <button class="icon-btn" id="open-settings" aria-label="Settings">⚙️</button>
+            </div>
+        </header>
+
+        <!-- Time Period Controls -->
+        <div class="time-controls card glass">
+            <div class="control-group">
+                <label for="view-type">View</label>
+                <select id="view-type" class="glass-select">
+                    <option value="monthly">Monthly</option>
+                    <option value="yearly">Yearly</option>
+                </select>
+            </div>
+            <div class="control-group" id="month-group">
+                <label for="month-select">Month</label>
+                <select id="month-select" class="glass-select">
+                    <option value="0">January</option>
+                    <option value="1">February</option>
+                    <option value="2">March</option>
+                    <option value="3">April</option>
+                    <option value="4">May</option>
+                    <option value="5">June</option>
+                    <option value="6">July</option>
+                    <option value="7">August</option>
+                    <option value="8">September</option>
+                    <option value="9">October</option>
+                    <option value="10">November</option>
+                    <option value="11">December</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label for="year-select">Year</label>
+                <select id="year-select" class="glass-select">
+                    <option value="2024">2024</option>
+                    <option value="2025" selected>2025</option>
+                    <option value="2026">2026</option>
+                </select>
+            </div>
+        </div>
+
+        <section class="grid" id="dashboard-grid">
+            <!-- Widget 1: The Pulse (Cash Flow Line Chart) -->
+            <div class="card glass widget-pulse span-2" data-widget-id="pulse">
+                <div class="card-header">
+                    <h2>The Pulse</h2>
+                    <div class="legend-mini">
+                        <span class="dot inc"></span> Income
+                        <span class="dot exp"></span> Expenses
+                    </div>
+                </div>
+                <div class="chart-container line-container">
+                    <canvas id="pulseChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Widget 2: Budget Space -->
+            <div class="card glass widget-budget" data-widget-id="budget">
+                <div class="card-header">
+                    <h2>Monthly Control</h2>
+                    <span id="budget-percent" class="tag">0%</span>
+                </div>
+
+                <!-- Display Section -->
+                <div class="budget-display">
+                    <div class="budget-info">
+                        <div class="amounts">
+                            <span id="budget-spent" class="spent">₪0</span> / <span id="budget-total"
+                                class="total">₪0</span>
+                        </div>
+                        <p id="budget-remaining" class="remaining">₪0 remaining</p>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="budget-fill"></div>
+                    </div>
+
+                    <div class="savings-display">
+                        <span class="label">🏦 Saved this month:</span>
+                        <span id="savings-amount" class="amount">₪0</span>
+                    </div>
+                </div>
+
+                <!-- Interactive Section -->
+                <div class="budget-controls">
+                    <div class="input-group">
+                        <label for="new-budget">Set Budget</label>
+                        <div class="input-wrapper">
+                            <span class="currency-symbol">₪</span>
+                            <input type="number" id="new-budget" placeholder="e.g. 5000">
+                            <button id="set-budget-btn" class="action-btn">Set</button>
+                        </div>
+                    </div>
+                    <div class="input-group">
+                        <label for="add-savings">Send to Savings</label>
+                        <div class="input-wrapper">
+                            <span class="currency-symbol">₪</span>
+                            <input type="number" id="add-savings" placeholder="Amount">
+                            <button id="add-savings-btn" class="action-btn savings-btn">Add</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Widget 3: Goal Tracker -->
+            <div class="card glass widget-goal" data-widget-id="goal">
+                <div class="card-header">
+                    <h2>🎯 Goal Tracker</h2>
+                    <div style="display:flex; gap:8px;">
+                        <span class="tag" id="goal-name-display">Vacation</span>
+                        <button class="icon-btn xs-btn" id="edit-goal-btn" aria-label="Edit Goal">✏️</button>
+                    </div>
+                </div>
+
+                <!-- Goal Edit Form (Hidden by default) -->
+                <div class="goal-edit-form" id="goal-edit-form" style="display:none;">
+                    <div class="input-group">
+                        <label for="goal-name-input">Goal Name</label>
+                        <input type="text" id="goal-name-input" class="glass-input" placeholder="e.g. New Car">
+                    </div>
+                    <div class="input-group">
+                        <label for="goal-target-input">Target Amount</label>
+                        <input type="number" id="goal-target-input" class="glass-input" placeholder="5000">
+                    </div>
+                    <button class="action-btn" id="save-goal-btn" style="width:100%; margin-top:8px;">Save Goal</button>
+                </div>
+
+                <!-- Goal Display -->
+                <div id="goal-display-section">
+                    <div class="goal-container">
+                        <div class="circular-progress" id="goal-progress">
+                            <div class="inner-circle">
+                                <span class="percentage" id="goal-pct">0%</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="goal-stats">
+                        <p>Saved: <strong id="goal-saved">₪0</strong> / <span id="goal-target-display">₪10,000</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Widget 4: Category Donuts -->
+            <div class="card glass widget-categories" data-widget-id="categories">
+                <div class="card-header">
+                    <h2>Expense Breakdown</h2>
+                </div>
+                <div class="chart-container donut-container">
+                    <canvas id="categoryChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Widget 5: Recent Transactions -->
+            <div class="card glass widget-transactions span-2" data-widget-id="transactions">
+                <div class="card-header">
+                    <h2>Recent Activity</h2>
+                </div>
+                <div class="transaction-list" id="transaction-list">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+
+            <!-- Widget 6: AI Insights Panel -->
+            <div class="card glass widget-insights span-2 ai-glow" data-widget-id="insights">
+                <div class="card-header">
+                    <h2><span class="sparkle">✨</span> AI Wealth Insight</h2>
+                </div>
+                <div class="insight-content" id="ai-insight">
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line short"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Settings Modal (Glassmorphism Overlay) -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal glass">
+            <div class="modal-header">
+                <h2>⚙️ Preferences</h2>
+                <button class="close-btn" id="close-settings">✕</button>
+            </div>
+            <div class="modal-body">
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <h3>Theme</h3>
+                        <p>Toggle light/dark mode</p>
+                    </div>
+                    <select id="theme-select" class="glass-select">
+                        <option value="dark">Dark Theme (Default)</option>
+                        <option value="light">Light Theme</option>
+                    </select>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <h3>Aesthetic</h3>
+                        <p>Change widget colors</p>
+                    </div>
+                    <select id="color-select" class="glass-select">
+                        <option value="vibrant">Vibrant (Default)</option>
+                        <option value="monochrome">Monochrome (B&W)</option>
+                        <option value="ocean">Ocean Blue</option>
+                    </select>
+                </div>
+
+                <div class="setting-row">
+                    <div class="setting-info">
+                        <h3>Language Display</h3>
+                        <p>Simulates backend language change</p>
+                    </div>
+                    <select id="lang-select" class="glass-select">
+                        <option value="en">English (LTR)</option>
+                        <option value="he">Hebrew (RTL)</option>
+                    </select>
+                </div>
+
+                <div class="setting-row layout-row">
+                    <div class="setting-info"
+                        style="width:100%; text-align:center; padding-top: 10px; border-top:1px dashed rgba(255,255,255,0.1); margin-bottom: 0;">
+                        <h3>Dashboard Layout</h3>
+                        <p style="margin-bottom: 12px; margin-top:2px;">Drag to reorder, click 👁️ to hide</p>
+
+                        <ul class="layout-list" id="widget-layout-list">
+                            <li class="layout-item" data-id="pulse" draggable="true">
+                                <span class="drag-handle">☰</span> The Pulse (Line Chart)
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                            <li class="layout-item" data-id="budget" draggable="true">
+                                <span class="drag-handle">☰</span> Monthly Control
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                            <li class="layout-item" data-id="goal" draggable="true">
+                                <span class="drag-handle">☰</span> Goal Tracker
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                            <li class="layout-item" data-id="categories" draggable="true">
+                                <span class="drag-handle">☰</span> Expense Breakdown
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                            <li class="layout-item" data-id="transactions" draggable="true">
+                                <span class="drag-handle">☰</span> Recent Activity
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                            <li class="layout-item" data-id="insights" draggable="true">
+                                <span class="drag-handle">☰</span> AI Insights
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

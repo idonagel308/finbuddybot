@@ -26,7 +26,7 @@ import asyncio
 import database as db
 import bot
 from models import ExpenseModel, ExpenseResponse
-from security import verify_api_key, rate_limit_check
+from security import verify_api_key, rate_limit_check, verify_telegram_webapp
 
 load_dotenv()
 
@@ -64,7 +64,17 @@ app = FastAPI(
 )
 
 # ── Web App Static Files ──
-# (Mount removed to keep bot lean)
+import os
+from fastapi.responses import FileResponse
+webapp_dir = os.path.join(os.path.dirname(__file__), "webapp")
+if os.path.exists(webapp_dir):
+    app.mount("/static", StaticFiles(directory=webapp_dir), name="static")
+    
+    @app.get("/webapp")
+    async def serve_webapp():
+        return FileResponse(os.path.join(webapp_dir, "index.html"))
+else:
+    logger.warning("Webapp directory not found, static files will not be served.")
 
 
 # ── Global Exception Handler ──
@@ -225,44 +235,149 @@ async def get_chart_data(user_id: int):
     return totals
 
 
-# ── Web App API (Phase 1: No Auth for Local Testing) ──
+# ── Web App API (Phase 2: Live Backend Integration) ──
 @app.get("/api/webapp/dashboard")
-async def webapp_dashboard(user_id: int):
-    """Serve data for the Telegram Web App dashboard."""
+async def webapp_dashboard(
+    user_id: int = Depends(verify_telegram_webapp),
+    year: int = None,
+    month: int = None
+):
+    """Serve real data for the Telegram Web App dashboard."""
     _validate_user_id(user_id)
     profile = db.get_profile(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
-    monthly_spend, _ = db.get_monthly_summary(user_id)
     
-    rows = db.get_recent_expenses(user_id, limit=5)
-    recent = []
-    for r in rows:
-        recent.append({
-            "id": r[0],
-            "date": r[1],
-            "amount": r[2],
-            "category": r[3],
-            "description": r[4]
-        })
-        
-    return {
-        "profile": profile,
-        "monthly_spend": monthly_spend,
-        "recent_transactions": recent,
-        "insight": f"Total spend so far: {monthly_spend:.2f} {profile.get('currency', 'NIS')}."
+    # 1. Budget and Monthly Spend
+    total_spent, total_income = db.get_monthly_summary(user_id, year=year, month=month)
+    monthly_budget = db.get_budget(user_id) or 0
+    net_flow = total_income - total_spent
+    
+    # Calculate savings (simplistic tracking for now: income - spent. Real implementation would track specific 'transfer' txs)
+    current_savings = max(0, net_flow) 
+
+    budget_data = {
+        "spent": total_spent,
+        "total": monthly_budget,
+        "savings": current_savings
     }
 
+    # 1.5 Generate Real CashFlow Series for the line chart
+    cashFlowSeries = db.get_daily_aggregation(user_id, year=year, month=month)
+
+    # 2. Recent Transactions (Formatted for the JS list widget)
+    # If a specific month is selected, we should fetch that month's expenses.
+    if month is not None or year is not None:
+        rows = db.get_monthly_expenses(user_id, year=year, month=month)[:10]
+    else:
+        rows = db.get_recent_expenses(user_id, limit=6)
+        
+    recent = []
+    for r in rows:
+        amount = r[2]
+        cat = r[3]
+        tx_type = 'inc' if cat in db.ALLOWED_CATEGORIES.intersection({'Salary', 'Investment', 'Gift'}) or r[5] == 'income' else 'exp'
+        
+        # Determine emoji icon based on simple mapping
+        icon = '🚗' if cat == 'Transport' else '🍔' if cat == 'Food' else '💼' if tx_type == 'inc' else '💸'
+        
+        recent.append({
+            "id": r[0],
+            "title": r[4] or cat,
+            "category": cat,
+            "amount": amount,
+            "type": tx_type,
+            "time": r[1][:10], # Truncate ISO to YYYY-MM-DD
+            "icon": icon
+        })
+
+    # 3. Dynamic Goal Data (Mocked persistence for Phase 2, usually stored in DB)
+    goal_data = {
+        "name": "New Goal",
+        "target": 10000,
+        "current": current_savings
+    }
+        
+    # 4. Sync AI Insight from Bot
+    # Use the requested year/month or the current one
+    y = year or datetime.now().year
+    m = month or datetime.now().month
+    insight = db.get_insight(user_id, y, m)
+
+    if not insight:
+        insight = f"""
+            <p><strong>💡 Note:</strong> No AI insights generated for this month yet.</p>
+            <p>Tap <strong>AI Context Insights</strong> in the Telegram bot to generate a fresh analysis.</p>
+        """
+
+    return {
+        "budget": budget_data,
+        "netFlow": { "income": total_income, "expenses": total_spent },
+        "cashFlowSeries": cashFlowSeries,
+        "transactions": recent,
+        "goal": goal_data,
+        "insight": insight
+    }
+
+@app.get("/api/webapp/categories")
+async def webapp_categories(
+    user_id: int = Depends(verify_telegram_webapp),
+    year: int = None,
+    month: int = None
+):
+    """Serve category breakdown for the donut chart."""
+    _validate_user_id(user_id)
+    totals = db.get_expense_totals(user_id, year=year, month=month)
+    
+    # Filter out income categories for the expense breakdown donut
+    expense_totals = {k: v for k, v in totals.items() if k not in {'Salary', 'Investment', 'Gift'}}
+    return expense_totals or {"No Category": 0}
+
+# ── Settings Persistence Endpoints ──
+
+class UserSettings(BaseModel):
+    theme: str = None
+    layout: str = None
+    budget_target: float = None
+    financial_goal: str = None
+    language: str = None
+    accent_color: str = None
+
+@app.get("/api/webapp/settings")
+async def get_webapp_settings(user_id: int = Depends(verify_telegram_webapp)):
+    """Fetch user-specific dashboard preferences."""
+    settings = db.get_user_settings(user_id)
+    return settings
+
+@app.post("/api/webapp/settings")
+async def save_webapp_settings(
+    settings: UserSettings, 
+    user_id: int = Depends(verify_telegram_webapp)
+):
+    """Save user-specific dashboard preferences."""
+    db.save_user_settings(
+        user_id,
+        theme=settings.theme,
+        layout=settings.layout,
+        budget_target=settings.budget_target,
+        financial_goal=settings.financial_goal,
+        language=settings.language,
+        accent_color=settings.accent_color
+    )
+    return {"status": "success"}
+
 class WebAppTransaction(BaseModel):
-    user_id: int
     amount: float
     category: str
     description: str = ""
 
 @app.post("/api/webapp/transaction")
-async def webapp_transaction(tx: WebAppTransaction):
+async def webapp_transaction(
+    tx: WebAppTransaction, 
+    user_id: int = Depends(verify_telegram_webapp)
+):
     """Log a transaction from Web App."""
-    _validate_user_id(tx.user_id)
+    _validate_user_id(user_id)
     try:
-        db.add_expense(tx.user_id, tx.amount, tx.category, tx.description)
+        db.add_expense(user_id, tx.amount, tx.category, tx.description)
         return {"status": "success"}
     except Exception as e:
         logger.error(f"Webapp tx error: {e}")

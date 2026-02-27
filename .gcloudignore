@@ -1,20 +1,24 @@
-# .gcloudignore — Explicit Cloud Upload Policy
-# This ensures gcloud uploads only what is needed for the Docker build.
+# .gcloudignore — Phase 3 Secure Policy
 
 # ── General Rules ──
 .gcloudignore
 .git/
 .gitignore
+.dockerignore
 
 # ── Block Environment & Secrets ──
 .env
 *.json
 GOOGLE_APPLICATION_CREDENTIALS
+service_account.json
+credentials.json
 
 # ── Block Databases ──
 *.db
 *.sqlite
 *.sqlite3
+fintech.db
+fintech_test.db
 
 # ── Block Local Python Environment ──
 venv/
@@ -24,19 +28,20 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+
+# ── Block Logs & Debug ──
+*.txt
+*.log
+debug_db.py
+list_models.py
 
 # ── Block IDEs ──
 .vscode/
 .idea/
 
-# ── ALLOW essential files that might be matched by broad patterns ──
-#!requirements.txt  # Explicitly allow in case of hierarchy issues
-
 # ── Block Agent Workspace ──
 .agent/
 .gemini/
-
-# ── Block Heavy Assets ──
-GoogleCloudSDKInstaller.exe
-tests/
-scripts/
+.brain/
+brain/
