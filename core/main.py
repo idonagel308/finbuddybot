@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from telegram import Update
 import asyncio
 
-import database as db
+import services.database as db
 import bot
 from models import ExpenseModel, ExpenseResponse
 from security import verify_api_key, rate_limit_check, verify_telegram_webapp
@@ -77,7 +77,7 @@ app = FastAPI(
 # ── Web App Static Files ──
 import os
 from fastapi.responses import FileResponse
-webapp_dir = os.path.join(os.path.dirname(__file__), "webapp")
+webapp_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "webapp")
 if os.path.exists(webapp_dir):
     app.mount("/static", StaticFiles(directory=webapp_dir), name="static")
     
@@ -399,7 +399,7 @@ async def webapp_transaction(
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8080))
+    port = int(os.getenv("PORT", 8000))
     
     db.init_db()
     # Cold Start: Sync from Sheets to populate local SQLite cache

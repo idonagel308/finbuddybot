@@ -11,59 +11,14 @@ from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+from core.config import (
+    logger, MAX_MESSAGES_PER_MINUTE, MAX_MESSAGE_LENGTH, TELEGRAM_MAX_LENGTH,
+    ALLOWED_USER_ID, VALID_CALLBACKS, CATEGORY_EMOJIS
 )
-logger = logging.getLogger(__name__)
+import services.database as db
+import services.llm_helper as llm_helper
 
-# Suppress httpx logs that leak the bot token in URLs
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-
-import database as db
-import llm_helper
-
-# --- Constants ---
-MAX_MESSAGES_PER_MINUTE = 10
-MAX_MESSAGE_LENGTH = 500
-TELEGRAM_MAX_LENGTH = 4096  # Telegram's hard limit for a single message
 _user_message_timestamps = defaultdict(list)
-
-# Single-tenant security: Load allowed user ID
-ALLOWED_USER_ID = os.getenv('ALLOWED_USER_ID')
-if ALLOWED_USER_ID:
-    try:
-        ALLOWED_USER_ID = int(ALLOWED_USER_ID)
-    except ValueError:
-        logger.error(f"Invalid ALLOWED_USER_ID in .env: {ALLOWED_USER_ID}. Must be an integer.")
-        ALLOWED_USER_ID = None
-
-# Whitelist of valid callback data values
-VALID_CALLBACKS = {
-    'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart',
-    'insights', 'delete_all_monthly', 'back_to_menu', 'settings_menu', 'settings_tools',
-    'export_csv', 'delete_all', 'undo_last',
-    # Settings sub-menus
-    'settings_set_lang', 'settings_set_currency', 'settings_set_budget',
-    'settings_set_age', 'settings_set_income', 'settings_set_goals',
-    'settings_edit_lang_custom', 'settings_edit_currency_custom',
-}
-
-# ── Emoji Display Mapping ──
-# The data layer stores clean strings ('Food', 'Transport').
-# This mapping adds emojis for the Telegram UI only.
-CATEGORY_EMOJI = {
-    'Housing': '🏠', 'Food': '🍔', 'Transport': '🚗',
-    'Entertainment': '🎉', 'Shopping': '🛍️', 'Health': '❤️',
-    'Education': '📚', 'Financial': '💸', 'Other': '❓',
-    'Salary': '💼', 'Investment': '📈', 'Gift': '🎁',
-}
 
 
 def _display_category(category: str) -> str:

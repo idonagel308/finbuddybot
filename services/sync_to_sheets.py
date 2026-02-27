@@ -4,8 +4,8 @@ import sqlite3
 import threading
 import time
 from dotenv import load_dotenv
-import database as db
-import sheets_etl
+import services.database as db
+import services.sheets_etl as sheets_etl
 
 load_dotenv()
 

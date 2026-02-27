@@ -1,6 +1,6 @@
 
 import asyncio
-import llm_helper
+import services.llm_helper as llm_helper
 import logging
 
 # Disable excessive logging for cleaner test output

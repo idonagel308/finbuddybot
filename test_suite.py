@@ -31,11 +31,11 @@ from datetime import datetime
 TEST_DB = os.path.join(tempfile.gettempdir(), "fintech_test.db")
 
 # Patch database module BEFORE importing
-import database as db
+import services.database as db
 db.DB_NAME = TEST_DB
 
-import llm_helper
-from llm_helper import (
+import services.llm_helper as llm_helper
+from services.llm_helper import (
     _classify_intent, _sanitize_user_input, _validate_parsed_expense,
     _fuzzy_match_category, _map_category, ALLOWED_CATEGORIES
 )

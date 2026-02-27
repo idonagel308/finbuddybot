@@ -4,7 +4,7 @@ import json
 import time
 import math
 import logging
-import currency as curr
+import services.currency as curr
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -30,10 +30,11 @@ def _get_client() -> genai.Client | None:
         _client = genai.Client(api_key=api_key)
     return _client
 
-# Models to try in order of preference
+# Models to try in order of preference (verified available via client.models.list())
 MODELS_TO_TRY = [
-    "gemini-2.0-flash-lite", # Efficient and stable
-    "gemini-2.0-flash",      # Fallback
+    "gemini-2.5-flash",  # Available and fast
+    "gemini-2.0-flash",  # Fallback
+    "gemini-1.5-flash",  # Legacy fallback
 ]
 
 ALLOWED_CATEGORIES = {
@@ -74,7 +75,8 @@ def _sanitize_user_input(text: str) -> str:
 # Strong signal words that almost certainly guarantee an expense message
 _STRONG_EXPENSE_SIGNALS = {
     'spent', 'paid', 'bought', 'cost', 'charged',
-    'שילמתי', 'קניתי', 'הוצאתי', 'עלה', 'עלתה', 'עולה'
+    'שילמתי', 'קניתי', 'הוצאתי', 'עלה', 'עלתה', 'עולה',
+    'אכלתי', 'שתיתי', 'שכרתי', 'הזמנתי', 'נסעתי',
 }
 
 # Strong signals for INCOME
@@ -472,8 +474,10 @@ Examples:
 
     text_lower = safe_text.lower()
     
-    # Extract all numbers from the text
-    numbers = re.findall(r'\b\d+(?:\.\d+)?\b', text_lower.replace('-', ''))
+    # Extract all numbers. Also handle Hebrew-attached prefixes: ב20, ב-20, l35
+    # Replace any character run before a digit that is NOT a digit or dot with a space
+    normalized = re.sub(r'[^\d\s.,](\d)', r' \1', text_lower)
+    numbers = re.findall(r'\b\d+(?:\.\d+)?\b', normalized)
     if not numbers:
         return {"status": "no_category"}
         
@@ -486,22 +490,19 @@ Examples:
     tx_type = 'income' if bool(words_set & _STRONG_INCOME_SIGNALS) else 'expense'
 
     # Remove the amount string from the text to get the description
-    desc_text = re.sub(rf'\b{amount}\b|\b{int(amount)}\b', '', text_lower, count=1).strip()
+    desc_text = re.sub(rf'\b{re.escape(str(int(amount)))}\b', '', text_lower, count=1).strip()
     
     # Strip common filler/currency words
     desc_cleaned = re.sub(
-        r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|עלה|עלתה|עולה)\b',
-        '', desc_cleaned, flags=re.IGNORECASE
-    ) if 'desc_cleaned' in locals() else re.sub(
-        r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|עלה|עלתה|עולה)\b',
+        r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|אכלתי|שתיתי|עלה|עלתה|עולה)\b',
         '', desc_text, flags=re.IGNORECASE
     )
     
     # Strip common Hebrew prepositions (ב-, על, של, ל-)
-    desc_cleaned = re.sub(r'\b(?:ב|על|של|ל)-?\b', '', desc_cleaned).strip()
+    desc_cleaned = re.sub(r'(?:^|\s)(?:ב-?|על|של|ל-?)(?=\s|$)', ' ', desc_cleaned)
     
-    # Clean up multiple spaces and dashes
-    desc_cleaned = re.sub(r'[-\s]+', ' ', desc_cleaned).strip()
+    # Clean up multiple spaces, leading/trailing dashes
+    desc_cleaned = re.sub(r'[-\s]+', ' ', desc_cleaned).strip(' -')
     
     if not desc_cleaned:
         desc_cleaned = "Expense"
