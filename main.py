@@ -117,7 +117,9 @@ async def health_check():
 @app.post("/webhook/{token}")
 async def telegram_webhook(token: str, request: Request):
     """Ingest Telegram updates via Webhook."""
-    if token != os.getenv("TELEGRAM_BOT_TOKEN"):
+    import hmac
+    expected_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not hmac.compare_digest(token, expected_token):
         logger.warning("Unauthorized webhook access attempt.")
         raise HTTPException(status_code=403, detail="Forbidden")
     
@@ -212,9 +214,14 @@ async def get_summary(user_id: int):
     dependencies=[Depends(verify_api_key), Depends(rate_limit_check)],
 )
 async def get_chart_data(user_id: int):
-    """Get category totals for charts."""
+    """Get category totals for charts.
+    
+    Returns a flat {category: amount} dict (expense-only) suitable for
+    pie charts and frontend bar charts. Uses get_expense_totals() so the
+    response format is stable even if the internal DB schema changes.
+    """
     _validate_user_id(user_id)
-    totals = db.get_category_totals(user_id)
+    totals = db.get_expense_totals(user_id)
     return totals
 
 

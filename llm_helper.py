@@ -15,31 +15,35 @@ logger = logging.getLogger(__name__)
 # Configure Gemini API
 api_key = os.getenv("GOOGLE_API_KEY")
 
-_genai_module = None
+import google.genai as genai
+from google.genai import types
 
-def _get_genai():
-    """Lazy-loads the Google Generative AI SDK to improve cold start latency."""
-    global _genai_module
-    if _genai_module is None:
-        import google.generativeai as genai
+
+# Lazy singleton client — created once, reused across all calls
+_client: genai.Client | None = None
+
+def _get_client() -> genai.Client | None:
+    """Returns a cached genai.Client. Creates it on first call.
+    
+    The new google.genai SDK is stateless — a single Client handles all
+    model calls. No GenerativeModel objects are created or cached.
+    Returns None if no API key is configured (triggers regex fallback).
+    """
+    global _client
+    if _client is None:
         if not api_key:
-            logger.warning("GOOGLE_API_KEY not found in .env")
-        else:
-            genai.configure(api_key=api_key)
-        _genai_module = genai
-    return _genai_module
+            logger.warning("GOOGLE_API_KEY not set — LLM features disabled")
+            return None
+        _client = genai.Client(api_key=api_key)
+    return _client
 
-# List of models to try in order of preference/stability
+
+# Models to try in order of preference (primary → fallback)
 MODELS_TO_TRY = [
-    "gemini-2.5-flash",       # Primary - confirmed working in this environment
-    "gemini-1.5-flash",       # Fallback
+    "gemini-2.5-flash",   # Primary
+    "gemini-1.5-flash",   # Fallback
 ]
 
-# Cache GenerativeModel instances to avoid recreating on every call
-_model_cache = {}
-_insight_model_cache = {}
-
-# Allowed categories for validation (clean strings — no emojis in the data layer)
 ALLOWED_CATEGORIES = {
     'Housing', 'Food', 'Transport', 'Entertainment',
     'Shopping', 'Health', 'Education', 'Financial', 'Other'
@@ -119,7 +123,12 @@ def _classify_intent(text: str) -> str:
     clean_text = re.sub(r'[.,!?()]', '', text_lower)
     words = set(clean_text.split())
     has_number = bool(re.search(r'\d', text))
-    
+
+    # 0. Bare number with no words (e.g. "250", "42") — never a transaction;
+    #    can't determine category or intent, don't waste LLM tokens.
+    if has_number and re.fullmatch(r'[\d\s.,]+', clean_text.strip()):
+        return 'not_transaction'
+
     # 1. Pure greeting / question with no number → clearly not a transaction
     if not has_number:
         if words & _NON_TRANSACTION_SIGNALS or text_lower.endswith('?'):
@@ -148,14 +157,19 @@ def _classify_intent(text: str) -> str:
     if words & _WEAK_TRANSACTION_SIGNALS and len(clean_text.split()) <= 6:
         return 'transaction'
 
-    # 7. Fallbacks based on message length
+    # 7. Fallbacks based on message length and context
     word_count = len(clean_text.split())
-    if word_count <= 10:
-        # Short message with a number but no keywords (e.g. "new headphones 200") -> rely on LLM
+    if word_count <= 2:
+        # 1-2 word message with a number but no signals (e.g. "headphones 200") —
+        # too short to be meaningful without a category match — skip LLM.
+        return 'not_transaction'
+    elif word_count <= 10:
+        # 3-10 words with context: worth asking the LLM
         return 'ambiguous'
     else:
-        # Message with 10+ words and a number but absolutely NO signals -> reject to save tokens
+        # 10+ words, number, but zero signals = long non-financial text with a number
         return 'not_transaction'
+
 
 
 def _validate_parsed_expense(data: dict) -> dict:
@@ -290,16 +304,20 @@ def generate_insights(
     5. CRITICAL: You MUST translate your response into and respond strictly in the following language: {language}
     """
 
-    genai = _get_genai()
+    client = _get_client()
+    if not client:
+        return "Keep tracking your expenses to see where you can save!"
 
     for model_name in MODELS_TO_TRY:
         try:
-            if model_name not in _insight_model_cache:
-                _insight_model_cache[model_name] = genai.GenerativeModel(
-                    model_name,
-                    generation_config=genai.GenerationConfig(temperature=0.5),
-                )
-            response = _insight_model_cache[model_name].generate_content(prompt)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.5,
+                    max_output_tokens=400,  # 100-word insight ≈ 130 tokens; hard cap prevents runaway
+                ),
+            )
             return response.text.strip()
         except Exception as e:
             logger.warning(f"generate_insights: {model_name} failed: {type(e).__name__}")
@@ -326,10 +344,6 @@ def translate(text: str, target_language: str) -> str:
     if cache_key in _translation_cache:
         return _translation_cache[cache_key]
         
-    genai = _get_genai()
-    if not genai:
-        return text
-        
     prompt = (
         f"Translate the following text to {target_language}. "
         f"Preserve all Markdown formatting, emojis, and variables exactly as they are. "
@@ -337,9 +351,19 @@ def translate(text: str, target_language: str) -> str:
         f"Text to translate:\n{text}"
     )
     
+    client = _get_client()
+    if not client:
+        return text
+
     try:
-        model = genai.GenerativeModel('gemini-2.5-flash', generation_config=genai.GenerationConfig(temperature=0.0))
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                max_output_tokens=800,  # Enough for full-message translation
+            ),
+        )
         translated = response.text.strip()
         _translation_cache[cache_key] = translated
         return translated
@@ -387,55 +411,56 @@ Examples:
 <user_message>{safe_text}</user_message>
 """
 
-        genai = _get_genai()
-        for model_name in MODELS_TO_TRY:
-            try:
-                if model_name not in _model_cache:
-                    _model_cache[model_name] = genai.GenerativeModel(
-                        model_name,
-                        generation_config=genai.GenerationConfig(
+        client = _get_client()
+        if client:
+            for model_name in MODELS_TO_TRY:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
                             response_mime_type="application/json",
                             temperature=0.1,
+                            max_output_tokens=200,  # JSON blob needs ≤90 tokens; hard cap prevents runaway
                         ),
                     )
-                response = _model_cache[model_name].generate_content(prompt)
 
-                content = response.text.strip()
+                    content = response.text.strip()
 
-                try:
-                    data = json.loads(content)
-                except json.JSONDecodeError:
-                    # Fallback: try to extract JSON object from response
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        try:
-                            data = json.loads(json_match.group(0))
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to decode JSON from {model_name}: {content[:100]}")
+                    try:
+                        data = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Fallback: try to extract JSON object from response
+                        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                        if json_match:
+                            try:
+                                data = json.loads(json_match.group(0))
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to decode JSON from {model_name}: {content[:100]}")
+                                continue
+                        else:
+                            logger.warning(f"No JSON in response from {model_name}: {content[:100]}")
                             continue
+
+                    # LLM returned null → it decided this is not a transaction
+                    if data is None:
+                        return {"status": "not_transaction"}
+
+                    validated = _validate_parsed_expense(data)
+                    if validated:
+                        result = _apply_currency_conversion(validated, text)
+                        result["status"] = "success"
+                        return result
                     else:
-                        logger.warning(f"No JSON in response from {model_name}: {content[:100]}")
+                        logger.warning(f"LLM returned invalid expense data: trying next model")
                         continue
 
-                # LLM returned null → it decided this is not a transaction
-                if data is None:
-                    return {"status": "not_transaction"}
-
-                validated = _validate_parsed_expense(data)
-                if validated:
-                    result = _apply_currency_conversion(validated, text)
-                    result["status"] = "success"
-                    return result
-                else:
-                    logger.warning(f"LLM returned invalid expense data: trying next model")
+                except Exception as e:
+                    error_str = str(e)
+                    logger.warning(f"parse_expense: {model_name}: {type(e).__name__}")
+                    if "429" in error_str or "exhausted" in error_str.lower():
+                        time.sleep(1)
                     continue
-
-            except Exception as e:
-                error_str = str(e)
-                logger.warning(f"parse_expense: {model_name}: {type(e).__name__}")
-                if "429" in error_str or "exhausted" in error_str.lower():
-                    time.sleep(1)
-                continue
 
     logger.info("LLM unavailable. Falling back to Regex.")
 

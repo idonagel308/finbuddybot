@@ -95,14 +95,16 @@ def test_intent_detection():
         _test(f"EXPENSE: '{text}' ({desc})", result == 'transaction', f"got '{result}'")
 
     # Should be AMBIGUOUS or NOT expense (Optimized filtering)
+    # Note: bare digit-only strings (e.g. "123456") now correctly return 'not_transaction'
+    # since there is zero context to parse — flagging them ambiguous would waste LLM tokens.
     ambiguous_cases = [
-        ("I'm 25 years old", "Age statement", "ambiguous"),
-        ("my room is 302", "Room number", "ambiguous"),
-        ("123456", "Just a number", "ambiguous"),
+        ("I'm 25 years old", "Age statement", ['ambiguous', 'not_transaction']),
+        ("my room is 302",   "Room number",   ['ambiguous', 'not_transaction']),
+        ("123456",           "Just a number", ['not_transaction']),  # bare numbers are never transactions
     ]
-    for text, desc, expected in ambiguous_cases:
+    for text, desc, expected_list in ambiguous_cases:
         result = _classify_intent(text)
-        _test(f"AMBIGUOUS/NOT: '{text}' ({desc})", result == expected, f"got '{result}'")
+        _test(f"AMBIGUOUS/NOT: '{text}' ({desc})", result in expected_list, f"got '{result}'")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -247,6 +249,28 @@ def test_database():
         totals = db.get_category_totals(TEST_USER)
         _test("Category totals has Food", "Food" in totals)
         _test("Food total is 50", totals.get("Food", {}).get("expenses", 0) == 50.0)
+
+        # ── CRITICAL: get_expense_totals() contract ──
+        # These tests guard against format-mismatch bugs where callers expect
+        # a flat {cat: float} but get_category_totals() returns a nested dict.
+        # If these fail, the pie chart and AI insights will silently crash.
+        flat_totals = db.get_expense_totals(TEST_USER)
+        _test("get_expense_totals returns dict", isinstance(flat_totals, dict))
+        _test("get_expense_totals has Food", "Food" in flat_totals)
+        _test("get_expense_totals Food value is float", isinstance(flat_totals.get("Food"), float))
+        _test("get_expense_totals Food value is 50.0", flat_totals.get("Food") == 50.0)
+        # sum(totals.values()) must never crash — this is exactly what the pie chart does
+        try:
+            total = sum(flat_totals.values())
+            _test("get_expense_totals: sum(values) works without crash", total > 0)
+        except TypeError as e:
+            _test("get_expense_totals: sum(values) works without crash", False, f"TypeError: {e}")
+        # sorted(...) must never crash — this is exactly what the insights loop does
+        try:
+            sorted(flat_totals.items(), key=lambda x: x[1], reverse=True)
+            _test("get_expense_totals: sorted(items) works without crash", True)
+        except TypeError as e:
+            _test("get_expense_totals: sorted(items) works without crash", False, f"TypeError: {e}")
 
         # Validation — invalid amount
         try:

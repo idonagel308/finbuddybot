@@ -33,7 +33,7 @@ FALLBACK_RATES = {
 # ── Live rate cache ──
 _rate_cache: dict = {}
 _cache_timestamp: float = 0
-CACHE_TTL = 3600  # Refresh rates every hour
+CACHE_TTL = 21600  # Refresh rates every 6 hours (rates don't move meaningfully within a day)
 
 API_URL = "https://api.frankfurter.app/latest?from=ILS"
 

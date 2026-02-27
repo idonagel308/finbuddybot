@@ -266,7 +266,11 @@ def get_monthly_expenses(user_id: int, year: int = None, month: int = None):
 
 
 def get_category_totals(user_id: int, year: int = None, month: int = None):
-    """Calculates category totals for a month from cache."""
+    """Calculates category totals for a month from cache.
+    
+    Returns a nested dict: {category: {"expenses": float, "income": float}}
+    Use get_expense_totals() for the simpler flat format needed by charts/insights.
+    """
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -283,6 +287,30 @@ def get_category_totals(user_id: int, year: int = None, month: int = None):
     except Exception as e:
         logger.error(f"Error fetching category totals: {e}")
         return {}
+
+
+def get_expense_totals(user_id: int, year: int = None, month: int = None) -> dict:
+    """Returns a flat {category: amount} dict of EXPENSE-ONLY spending for a month.
+
+    This is the safe, consumer-friendly format used by:
+    - Pie chart generation
+    - AI insights generation
+    - The /chart REST API endpoint
+
+    It wraps get_category_totals() so that changes to the internal nested
+    structure never silently break these downstream consumers again.
+    """
+    nested = get_category_totals(user_id, year, month)
+    flat = {}
+    for cat, vals in nested.items():
+        if isinstance(vals, dict):
+            amount = vals.get("expenses", 0) or 0
+        else:
+            # Safety: handle legacy flat format gracefully
+            amount = float(vals) if vals else 0
+        if amount > 0:
+            flat[cat] = round(amount, 2)
+    return flat
 
 
 def delete_expense(user_id: int, expense_id: int) -> bool:

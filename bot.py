@@ -3,14 +3,13 @@ import io
 import asyncio
 import logging
 import time
-import traceback
 from datetime import datetime
 
 from functools import wraps
 from collections import defaultdict
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,8 +24,7 @@ logger = logging.getLogger(__name__)
 # Suppress httpx logs that leak the bot token in URLs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# --- Onboarding / Settings States ---
-ASK_AGE, ASK_INCOME, ASK_CURRENCY, ASK_LANGUAGE, ASK_INFO = range(5)
+
 
 import database as db
 import llm_helper
@@ -48,9 +46,13 @@ if ALLOWED_USER_ID:
 
 # Whitelist of valid callback data values
 VALID_CALLBACKS = {
-    'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart', 
-    'insights', 'delete_all_monthly', 'back_to_menu', 'settings_menu',
-    'export_csv', 'delete_all', 'undo_last'
+    'last_expenses', 'monthly_list', 'this_month', 'year_overview', 'pie_chart',
+    'insights', 'delete_all_monthly', 'back_to_menu', 'settings_menu', 'settings_tools',
+    'export_csv', 'delete_all', 'undo_last',
+    # Settings sub-menus
+    'settings_set_lang', 'settings_set_currency', 'settings_set_budget',
+    'settings_set_age', 'settings_set_income', 'settings_set_goals',
+    'settings_edit_lang_custom', 'settings_edit_currency_custom',
 }
 
 # ── Emoji Display Mapping ──
@@ -70,6 +72,37 @@ def _display_category(category: str) -> str:
         return category
     emoji = CATEGORY_EMOJI.get(category, '❓')
     return f"{emoji} {category}"
+
+
+# ── Profile Cache ──
+# Caches db.get_profile results in-process for PROFILE_CACHE_TTL seconds.
+# This eliminates a DB read on every _safe_send / _safe_edit call (which
+# both check language to decide whether to translate). For English-only
+# users this was pure wasted I/O on every single bot response.
+_PROFILE_CACHE_TTL = 300  # 5 minutes
+_profile_cache: dict = {}  # {user_id: (profile_dict, timestamp)}
+
+
+def _get_cached_profile(user_id: int) -> dict | None:
+    """Return a cached profile, or fetch from DB and cache it."""
+    now = time.monotonic()
+    entry = _profile_cache.get(user_id)
+    if entry:
+        profile, ts = entry
+        if now - ts < _PROFILE_CACHE_TTL:
+            return profile
+    # Cache miss or expired — fetch from DB
+    try:
+        profile = db.get_profile(user_id)
+    except Exception:
+        profile = None
+    _profile_cache[user_id] = (profile, now)
+    return profile
+
+
+def _invalidate_profile_cache(user_id: int):
+    """Call after any db.set_profile or db.set_budget write to ensure freshness."""
+    _profile_cache.pop(user_id, None)
 
 
 def _is_rate_limited(user_id: int) -> bool:
@@ -182,8 +215,9 @@ def _generate_pie_chart(totals: dict, total_sum: float) -> io.BytesIO:
 
         # Save to buffer
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=150, bbox_inches='tight',
+        fig.savefig(buf, format='png', dpi=90, bbox_inches='tight',
                     facecolor=fig.get_facecolor(), edgecolor='none')
+
         plt.close(fig)
         buf.seek(0)
         return buf
@@ -209,9 +243,10 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=Non
     Send a message, auto-truncating if it exceeds Telegram's 4096 char limit.
     Dynamically translates the message and buttons into the user's preferred language.
     Falls back to plain text if Markdown parsing fails.
+    Uses the profile cache to avoid a DB read on every call.
     """
     try:
-        profile = await asyncio.to_thread(db.get_profile, chat_id)
+        profile = _get_cached_profile(chat_id)
         target_lang = profile.get('language', 'English') if profile else 'English'
     except Exception:
         target_lang = 'English'
@@ -241,10 +276,11 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=Non
             return None
 
 
+
 async def _safe_edit(query, chat_id, text, parse_mode='Markdown', reply_markup=None):
-    """Dynamically translates and edits a message."""
+    """Dynamically translates and edits a message. Uses the profile cache."""
     try:
-        profile = await asyncio.to_thread(db.get_profile, chat_id)
+        profile = _get_cached_profile(chat_id)
         target_lang = profile.get('language', 'English') if profile else 'English'
     except Exception:
         target_lang = 'English'
@@ -271,6 +307,7 @@ async def _safe_edit(query, chat_id, text, parse_mode='Markdown', reply_markup=N
         except Exception as e:
             logger.error(f"Failed to edit message for {chat_id}: {type(e).__name__}")
             return None
+
 
 
 def _private_only(func):
@@ -438,107 +475,143 @@ async def deleteall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ── Settings Helpers ──
+
+def _profile_defaults(profile: dict | None) -> dict:
+    """Returns a profile dict with safe fallback defaults."""
+    if not profile:
+        return {'age': 18, 'yearly_income': 0, 'currency': 'NIS', 'language': 'English', 'additional_info': ''}
+    return {
+        'age': profile.get('age') or 18,
+        'yearly_income': profile.get('yearly_income') or 0,
+        'currency': profile.get('currency') or 'NIS',
+        'language': profile.get('language') or 'English',
+        'additional_info': profile.get('additional_info') or '',
+    }
+
+
+def _get_settings_keyboard(profile: dict | None) -> InlineKeyboardMarkup:
+    """Builds the settings hub keyboard showing current values for each field."""
+    p = _profile_defaults(profile)
+    lang    = p['language']
+    cur     = p['currency']
+    age     = str(p['age']) if p['age'] != 18 or profile else '— Not set'
+    income  = f"{p['yearly_income']:,.0f}" if p['yearly_income'] else '— Not set'
+    goals   = '✅ Set' if p['additional_info'] else '— Not set'
+    keyboard = [
+        [InlineKeyboardButton(f"🌐 Language: {lang}", callback_data='settings_set_lang')],
+        [InlineKeyboardButton(f"💱 Currency: {cur}", callback_data='settings_set_currency')],
+        [InlineKeyboardButton("💰 Set Monthly Budget", callback_data='settings_set_budget')],
+        [InlineKeyboardButton(f"👤 Age: {age}", callback_data='settings_set_age'),
+         InlineKeyboardButton(f"💵 Income: {income}", callback_data='settings_set_income')],
+        [InlineKeyboardButton(f"🎯 Goals: {goals}", callback_data='settings_set_goals')],
+        [InlineKeyboardButton("📤 Export CSV", callback_data='export_csv'),
+         InlineKeyboardButton("🗑️ Delete All Data", callback_data='delete_all')],
+        [InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def _show_settings(target, chat_id: int, user_id: int, edit: bool = False):
+    """Renders the settings hub. Use edit=True when updating from a CallbackQuery."""
+    profile = await asyncio.to_thread(db.get_profile, user_id)
+    text = (
+        "⚙️ *Settings & Profile*\n\n"
+        "_Tap any setting to change it individually._\n"
+        "_Your profile is used by the AI Insights engine on every analysis._"
+    )
+    keyboard = _get_settings_keyboard(profile)
+    if edit:
+        await target.edit_message_text(text=text, parse_mode='Markdown', reply_markup=keyboard)
+    else:
+        await _safe_send(target, chat_id, text, reply_markup=keyboard)
+
+
 @_private_only
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts the profile onboarding conversation."""
+    """Handler for /settings — shows the inline settings hub."""
+    chat_id = update.effective_chat.id
     user_id = update.effective_user.id
-    
-    if update.callback_query:
-        await update.callback_query.answer()
-        message = update.callback_query.message
-    else:
-        message = update.message
-        
-    profile = await asyncio.to_thread(db.get_profile, user_id)
-    if profile:
-        await message.reply_text(
-            f"👤 *Your Wealth Profile:*\n"
-            f"Age: {profile['age']}\n"
-            f"Annual Income: {profile['yearly_income']:,.0f} {profile['currency']}\n"
-            f"Language: {profile.get('language', 'English')}\n"
-            f"Objective / Context: {profile['additional_info']}\n\n"
-            f"Let's calibrate your profile for sharper AI intelligence. 🧠\nFirst, what is your current age?\n\n_(Send /cancel at any time to abort)_",
-            parse_mode='Markdown'
-        )
-    else:
-        await message.reply_text(
-            "Welcome to the Profile Calibration protocol. 🧠\n\nBy providing accurate data, the AI Wealth Manager can generate highly tailored mathematical models and behavioral insights for your spending.\n\nFirst, what is your current age?\n\n_(Send /cancel at any time to abort)_"
-        )
-    return ASK_AGE
+    await _show_settings(context.bot, chat_id, user_id, edit=False)
 
-async def ask_age(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    try:
-        age = int(text)
-        if not (13 <= age <= 120):
-            raise ValueError
-        context.user_data['age'] = age
-        await _safe_send(context.bot, update.effective_chat.id, "Excellent. Next, what is your total estimated annual income? (e.g. 150000)")
-        return ASK_INCOME
-    except ValueError:
-        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Invalid format. Please enter a standard integer for your age (e.g., 30).")
-        return ASK_AGE
 
-async def ask_income(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    try:
-        income = float(text)
-        if income < 0:
-            raise ValueError
-        context.user_data['income'] = income
-        await _safe_send(context.bot, update.effective_chat.id, "Understood. Which fiat currency do you primarily hold? (e.g., NIS, USD, EUR, GBP)")
-        return ASK_CURRENCY
-    except ValueError:
-        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Invalid format. Please enter a positive number for your annual income.")
-        return ASK_INCOME
-
-async def ask_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    currency = update.message.text.strip().upper()
-    if len(currency) > 10:
-        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Currency code too long. Standard codes preferred (NIS, USD, EUR).")
-        return ASK_CURRENCY
-    
-    context.user_data['currency'] = currency
-    await _safe_send(context.bot, update.effective_chat.id, "Excellent. What language should I respond in? (e.g., English, Hebrew, Spanish, etc.)")
-    return ASK_LANGUAGE
-
-async def ask_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    language = update.message.text.strip()
-    if len(language) > 50:
-        await _safe_send(context.bot, update.effective_chat.id, "⚠️ Language name too long. Please provide a standard language name.")
-        return ASK_LANGUAGE
-    context.user_data['language'] = language
-    await _safe_send(context.bot, update.effective_chat.id, "Finally, is there any specific financial context or objective I should optimize for? (e.g., 'Aggressively saving for a mortgage', 'Clearing $20k in student debt', 'LeanFIRE within 10 years')\n\nSend 'None' if you have no specific directives.")
-    return ASK_INFO
-
-async def ask_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    info = update.message.text.strip()
-    if info.lower() == 'none':
-        info = ""
-        
-    age = context.user_data.get('age')
-    income = context.user_data.get('income')
-    currency = context.user_data.get('currency', 'NIS')
-    language = context.user_data.get('language', 'English')
+async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TYPE, setting_key: str) -> bool:
+    """
+    Processes a free-text message that is a pending settings value.
+    Called by handle_message when context.user_data['awaiting_setting'] is set.
+    Always clears the flag and returns True (message consumed).
+    """
     user_id = update.effective_user.id
-    
-    try:
-        await asyncio.to_thread(db.set_profile, user_id, age, income, currency, language, info)
-        await _safe_send(context.bot, update.effective_chat.id, 
-            "✅ *Profile saved successfully!*\n\nThe AI Coach will now use this info for insights.\nUse /menu to view your dashboard.", 
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Error saving profile: {e}")
-        await _safe_send(context.bot, update.effective_chat.id, "⚠️ There was an error saving your profile. Please try again later.")
-        
-    context.user_data.clear()
-    return ConversationHandler.END
+    chat_id = update.effective_chat.id
+    text = update.message.text.strip()
+    context.user_data.pop('awaiting_setting', None)
 
-async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _safe_send(context.bot, update.effective_chat.id, "❌ Profile setup cancelled. Your existing profile was not modified.")
-    context.user_data.clear()
-    return ConversationHandler.END
+    try:
+        profile = await asyncio.to_thread(db.get_profile, user_id)
+        p = _profile_defaults(profile)
+
+        if setting_key == 'age':
+            age = int(text)
+            if not (13 <= age <= 120):
+                raise ValueError("Age out of range")
+            await asyncio.to_thread(db.set_profile, user_id, age, p['yearly_income'], p['currency'], p['language'], p['additional_info'])
+            _invalidate_profile_cache(user_id)
+            await _safe_send(context.bot, chat_id, f"✅ *Age updated to {age}.*", parse_mode='Markdown')
+
+        elif setting_key == 'income':
+            income = float(text.replace(',', '').replace(' ', ''))
+            if income < 0:
+                raise ValueError("Income must be positive")
+            await asyncio.to_thread(db.set_profile, user_id, p['age'], income, p['currency'], p['language'], p['additional_info'])
+            _invalidate_profile_cache(user_id)
+            await _safe_send(context.bot, chat_id, f"✅ *Annual income updated to {income:,.0f}.*", parse_mode='Markdown')
+
+        elif setting_key == 'goals':
+            info = '' if text.lower() == 'none' else text
+            await asyncio.to_thread(db.set_profile, user_id, p['age'], p['yearly_income'], p['currency'], p['language'], info)
+            _invalidate_profile_cache(user_id)
+            await _safe_send(context.bot, chat_id, "✅ *Financial goals updated.*", parse_mode='Markdown')
+
+        elif setting_key == 'budget':
+            amount = float(text.replace(',', '').replace(' ', ''))
+            if amount <= 0 or amount > db.MAX_AMOUNT:
+                raise ValueError("Budget out of range")
+            await asyncio.to_thread(db.set_budget, user_id, amount)
+            _invalidate_profile_cache(user_id)
+            await _safe_send(context.bot, chat_id, f"✅ *Monthly budget set to {amount:,.0f}.*", parse_mode='Markdown')
+
+        elif setting_key == 'lang_custom':
+            if len(text) > 50:
+                await _safe_send(context.bot, chat_id, "⚠️ Language name too long. Please use a standard name like 'Italian'.")
+                return True
+            await asyncio.to_thread(db.set_profile, user_id, p['age'], p['yearly_income'], p['currency'], text, p['additional_info'])
+            _invalidate_profile_cache(user_id)
+            await _safe_send(context.bot, chat_id, f"✅ *Language set to {text}.*", parse_mode='Markdown')
+
+        elif setting_key == 'currency_custom':
+            cur = text.upper()
+            if len(cur) > 10:
+                await _safe_send(context.bot, chat_id, "⚠️ Code too long. Use standard codes like CHF, TRY, BRL.")
+                return True
+            await asyncio.to_thread(db.set_profile, user_id, p['age'], p['yearly_income'], cur, p['language'], p['additional_info'])
+            _invalidate_profile_cache(user_id)
+            await _safe_send(context.bot, chat_id, f"✅ *Currency set to {cur}.*", parse_mode='Markdown')
+
+    except (ValueError, TypeError):
+        hints = {
+            'age': 'a number between 13 and 120 _(e.g. 30)_',
+            'income': 'a positive number _(e.g. 120000)_',
+            'budget': 'a positive amount _(e.g. 5000)_',
+            'lang_custom': 'a language name _(e.g. Italian)_',
+            'currency_custom': 'a 3-letter currency code _(e.g. CHF)_',
+        }
+        hint = hints.get(setting_key, 'a valid value')
+        await _safe_send(context.bot, chat_id, f"⚠️ Invalid input. Please send {hint}.", parse_mode='Markdown')
+        return True
+
+    # Re-show the settings hub after a successful update
+    await _show_settings(context.bot, chat_id, user_id, edit=False)
+    return True
 
 
 
@@ -644,17 +717,51 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text="⚠️ Error loading month data.")
         return
 
+    # Handle language quick-pick callbacks (e.g. "lang_English")
+    if data.startswith("lang_"):
+        lang_name = data[5:]
+        valid_langs = {'English', 'Hebrew', 'Spanish', 'French', 'German', 'Russian', 'Arabic', 'Portuguese'}
+        if lang_name in valid_langs:
+            try:
+                profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                p = _profile_defaults(profile)
+                await asyncio.to_thread(db.set_profile, telegram_id, p['age'], p['yearly_income'], p['currency'], lang_name, p['additional_info'])
+                _invalidate_profile_cache(telegram_id)
+                await _show_settings(query, telegram_id, telegram_id, edit=True)
+            except Exception:
+                await query.edit_message_text(text="⚠️ Error updating language. Please try again.")
+        return
+
+    # Handle currency quick-pick callbacks (e.g. "cur_USD")
+    if data.startswith("cur_"):
+        cur_code = data[4:]
+        valid_curs = {'NIS', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'}
+        if cur_code in valid_curs:
+            try:
+                profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                p = _profile_defaults(profile)
+                await asyncio.to_thread(db.set_profile, telegram_id, p['age'], p['yearly_income'], cur_code, p['language'], p['additional_info'])
+                _invalidate_profile_cache(telegram_id)
+                await _show_settings(query, telegram_id, telegram_id, edit=True)
+            except Exception:
+                await query.edit_message_text(text="⚠️ Error updating currency. Please try again.")
+        return
+
     # Validate other callback data against whitelist
     if data not in VALID_CALLBACKS:
         logger.warning(f"Invalid callback data from user {telegram_id}: rejected")
         return
+
 
     try:
         if data == 'last_expenses':
             expenses = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
             if not expenses:
                 text = "📭 No expenses found yet."
-                await query.edit_message_text(text=text)
+                await query.edit_message_text(
+                    text=text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]])
+                )
             else:
                 text = "📜 *Last 5 Expenses:*\n\n"
                 buttons = []
@@ -663,6 +770,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     safe_desc = _escape_markdown(exp[4] or '')
                     text += f"🗓️ `{date_short}` | 💰 *{exp[2]}* | {_display_category(exp[3])}\n_{safe_desc}_\n\n"
                     buttons.append([InlineKeyboardButton(f"🗑️ Delete {exp[2]} {_display_category(exp[3])}", callback_data=f"del_{exp[0]}")])
+                buttons.append([InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')])
                 reply_markup = InlineKeyboardMarkup(buttons)
                 await query.edit_message_text(text=text, parse_mode='Markdown', reply_markup=reply_markup)
 
@@ -682,12 +790,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == 'back_to_menu':
             keyboard = [
-                [InlineKeyboardButton("📜 Last Expenses", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
-                [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart')],
-                [InlineKeyboardButton("💡 AI Insights", callback_data='insights')],
+                [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
+                [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
+                [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')],
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(text='📊 *My Finances Menu:*', reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(text='📊 *My Finances Dashboard:*', reply_markup=reply_markup, parse_mode='Markdown')
 
         elif data == 'this_month':
             expenses = await asyncio.to_thread(db.get_monthly_expenses, user_id=telegram_id)
@@ -752,7 +860,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'pie_chart':
-            totals = await asyncio.to_thread(db.get_category_totals, user_id=telegram_id)
+            # get_expense_totals() returns flat {category: float} (expense-only)
+            # This is the correct format for the pie chart — never use get_category_totals() here.
+            totals = await asyncio.to_thread(db.get_expense_totals, telegram_id)
             if not totals:
                 await query.edit_message_text(text="📉 No data for a chart yet.")
                 return
@@ -772,7 +882,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pct = (amt / total_sum) * 100
                 caption += f"• {_display_category(cat)}: ₪{amt:,.2f} ({pct:.0f}%)\n"
 
-            buttons = [[InlineKeyboardButton("⬅️ Back", callback_data='menu')]]
+            buttons = [[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]]
 
             if chart_buf is None:
                 # Fallback to text if chart generation fails
@@ -794,21 +904,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_msg = await query.edit_message_text(text="🧠 *Analyzing your spending...*\n\n_This might take a moment._", parse_mode='Markdown')
 
             try:
-                # Fetch all needed context quickly
-                totals = await asyncio.to_thread(db.get_category_totals, telegram_id)
+                # get_category_totals returns {cat: {"expenses": X, "income": Y}}
+                # We flatten it to {cat: float} for the LLM insights function
+                raw_totals = await asyncio.to_thread(db.get_category_totals, telegram_id)
+                totals = {cat: v.get('expenses', 0) for cat, v in raw_totals.items() if v.get('expenses', 0) > 0}
+                if not totals:
+                    await query.edit_message_text(text="💡 No spending data yet. Log some expenses first!", parse_mode='Markdown')
+                    return
+
                 budget = await asyncio.to_thread(db.get_budget, telegram_id)
                 recent = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
                 profile = await asyncio.to_thread(db.get_profile, telegram_id)
-                
-                # Call enhanced insights
+
+                # Build kwargs safely — profile may be None (new user)
                 insight = await asyncio.to_thread(
                     llm_helper.generate_insights,
                     totals=totals,
-                    age=profile['age'] if profile else None,
-                    yearly_income=profile['yearly_income'] if profile else None,
+                    age=profile.get('age') if profile else None,
+                    yearly_income=profile.get('yearly_income') if profile else None,
                     budget=budget,
                     recent_expenses=recent,
                     currency=profile.get('currency', 'NIS') if profile else 'NIS',
+                    language=profile.get('language', 'English') if profile else 'English',
                     additional_info=profile.get('additional_info', '') if profile else None
                 )
 
@@ -816,37 +933,107 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.edit_message_text(text="⚠️ *AI Engine Unavailable*\n\nCould not generate insights at this time.", parse_mode='Markdown')
                     return
 
-                # Format for better readability
                 safe_insight = _escape_markdown(insight)
                 await query.edit_message_text(text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", parse_mode='Markdown')
             except Exception as e:
                 logger.error(f"Error generating insights callback: {e}")
                 await query.edit_message_text(text="⚠️ *Error*\n\nThe AI ran into an issue processing your profile.", parse_mode='Markdown')
 
-        elif data == 'settings_menu':
-            # This is handled directly by the ConversationHandler in get_application()
-            # If the user clicks "⚙️ Settings & Tools" on the main menu, it triggers settings_command.
-            # Here we provide the actual settings tools if they navigate *away* from the conversation,
-            # or we can provide a sub-menu. To keep it simple, we provide the tools sub-menu here,
-            # but we need to change the callback data of "Update Profile" to trigger the conversation.
-            
-            # Note: Since 'settings_menu' triggers the conversation, this block in button_handler
-            # actually gets intercepted by the ConversationHandler if the pattern matches!
-            # Therefore, this code block in button_handler for 'settings_menu' might be dead code
-            # unless we change the entry point pattern.
-            pass
+        elif data in ('settings_menu', 'settings_tools'):
+            # Both legacy and new entry point — always show the hub
+            context.user_data.pop('awaiting_setting', None)
+            await _show_settings(query, telegram_id, telegram_id, edit=True)
 
-        elif data == 'settings_tools':
+        elif data == 'settings_set_lang':
             keyboard = [
-                [InlineKeyboardButton("� Update Profile Calibration", callback_data='settings_menu')],
-                [InlineKeyboardButton("�📤 Export Data (CSV)", callback_data='export_csv')],
-                [InlineKeyboardButton("🗑️ Delete All Data", callback_data='delete_all')],
-                [InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]
+                [InlineKeyboardButton("🇬🇧 English", callback_data='lang_English'), InlineKeyboardButton("🇮🇱 Hebrew", callback_data='lang_Hebrew')],
+                [InlineKeyboardButton("🇪🇸 Spanish", callback_data='lang_Spanish'), InlineKeyboardButton("🇫🇷 French", callback_data='lang_French')],
+                [InlineKeyboardButton("🇩🇪 German", callback_data='lang_German'), InlineKeyboardButton("🇷🇺 Russian", callback_data='lang_Russian')],
+                [InlineKeyboardButton("🇸🇦 Arabic", callback_data='lang_Arabic'), InlineKeyboardButton("🇧🇷 Portuguese", callback_data='lang_Portuguese')],
+                [InlineKeyboardButton("✏️ Other (type it)", callback_data='settings_edit_lang_custom')],
+                [InlineKeyboardButton("⬅️ Back", callback_data='settings_tools')],
             ]
             await query.edit_message_text(
-                text="⚙️ *Settings & Tools*\n\n_Tip: Your profile calibrates the AI Insights engine._", 
-                reply_markup=InlineKeyboardMarkup(keyboard), 
-                parse_mode='Markdown'
+                text="🌐 *Choose your language:*\n\n_AI insights and all bot responses will be in this language._",
+                parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        elif data == 'settings_edit_lang_custom':
+            context.user_data['awaiting_setting'] = 'lang_custom'
+            await query.edit_message_text(
+                text="✏️ *Type your preferred language:*\n_(e.g. Italian, Thai, Turkish)_",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
+        elif data == 'settings_set_currency':
+            keyboard = [
+                [InlineKeyboardButton("🇮🇱 NIS ₪", callback_data='cur_NIS'), InlineKeyboardButton("🇺🇸 USD $", callback_data='cur_USD')],
+                [InlineKeyboardButton("🇪🇺 EUR €", callback_data='cur_EUR'), InlineKeyboardButton("🇬🇧 GBP £", callback_data='cur_GBP')],
+                [InlineKeyboardButton("🇨🇦 CAD", callback_data='cur_CAD'), InlineKeyboardButton("🇦🇺 AUD", callback_data='cur_AUD')],
+                [InlineKeyboardButton("🇯🇵 JPY ¥", callback_data='cur_JPY')],
+                [InlineKeyboardButton("✏️ Other (type it)", callback_data='settings_edit_currency_custom')],
+                [InlineKeyboardButton("⬅️ Back", callback_data='settings_tools')],
+            ]
+            await query.edit_message_text(
+                text="💱 *Choose your primary currency:*\n\n_Used for income tracking and AI insights._",
+                parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+
+        elif data == 'settings_edit_currency_custom':
+            context.user_data['awaiting_setting'] = 'currency_custom'
+            await query.edit_message_text(
+                text="✏️ *Type your currency code:*\n_(e.g. CHF, TRY, BRL)_",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
+        elif data == 'settings_set_budget':
+            budget = await asyncio.to_thread(db.get_budget, telegram_id)
+            total, _ = await asyncio.to_thread(db.get_monthly_summary, telegram_id)
+            context.user_data['awaiting_setting'] = 'budget'
+            budget_text = f"Current: *{budget:,.0f}*, spent *{total:,.0f}* this month." if budget else "_No budget set yet._"
+            await query.edit_message_text(
+                text=f"💰 *Set Monthly Budget*\n\n{budget_text}\n\n✏️ Type your new monthly budget amount:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
+        elif data == 'settings_set_age':
+            profile = await asyncio.to_thread(db.get_profile, telegram_id)
+            current = f"Current: *{profile['age']}*" if profile and profile.get('age') else "_Not set yet._"
+            context.user_data['awaiting_setting'] = 'age'
+            await query.edit_message_text(
+                text=f"👤 *Set Your Age*\n\n{current}\n\n✏️ Type your age (13–120):",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
+        elif data == 'settings_set_income':
+            profile = await asyncio.to_thread(db.get_profile, telegram_id)
+            currency = profile.get('currency', 'NIS') if profile else 'NIS'
+            income_val = profile.get('yearly_income', 0) if profile else 0
+            current = f"Current: *{income_val:,.0f} {currency} / year*" if income_val else "_Not set yet._"
+            context.user_data['awaiting_setting'] = 'income'
+            await query.edit_message_text(
+                text=f"💵 *Set Annual Income*\n\n{current}\n\n✏️ Type your yearly income:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
+        elif data == 'settings_set_goals':
+            profile = await asyncio.to_thread(db.get_profile, telegram_id)
+            current = f"_Current:_ {_escape_markdown(profile['additional_info'])}" if profile and profile.get('additional_info') else "_Not set yet._"
+            context.user_data['awaiting_setting'] = 'goals'
+            await query.edit_message_text(
+                text=(
+                    f"🎯 *Financial Goals & Context*\n\n{current}\n\n"
+                    "✏️ Describe your financial goals:\n"
+                    "_e.g. 'Saving for a mortgage', 'Clearing student debt', 'FIRE by 40'_\n\n"
+                    "_(Send 'none' to clear)_"
+                ),
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
             )
 
         elif data == 'undo_last':
@@ -857,7 +1044,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 success = await asyncio.to_thread(db.delete_expense, telegram_id, last_id)
                 if success:
                     await query.edit_message_text(
-                        text="↩️ *Last expense removed!*", 
+                        text="↩️ *Last expense removed!*",
                         parse_mode='Markdown',
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
                     )
@@ -904,6 +1091,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
+
+    # Priority: check for a pending settings input before doing expense parsing
+    awaiting = context.user_data.get('awaiting_setting')
+    if awaiting:
+        await _handle_setting_input(update, context, awaiting)
+        return
 
     # Rate limiting check
     if _is_rate_limited(user_id):
@@ -1032,24 +1225,10 @@ def get_application():
 
     application.add_error_handler(error_handler)
 
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler('start', start), 
-            CommandHandler('settings', settings_command),
-            CallbackQueryHandler(settings_command, pattern='^settings_menu$')
-        ],
-        states={
-            ASK_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_age)],
-            ASK_INCOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_income)],
-            ASK_CURRENCY: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_currency)],
-            ASK_LANGUAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_language)],
-            ASK_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_info)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel_onboarding)]
-    )
-    application.add_handler(conv_handler)
+    application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('menu', menu_command))
+    application.add_handler(CommandHandler('settings', settings_command))
     application.add_handler(CommandHandler('undo', undo_command))
     application.add_handler(CommandHandler('budget', budget_command))
     application.add_handler(CommandHandler('export', export_command))
