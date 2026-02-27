@@ -399,10 +399,11 @@ async def webapp_transaction(
 
 if __name__ == "__main__":
     import uvicorn
-
+    port = int(os.getenv("PORT", 8080))
+    
     db.init_db()
     # Cold Start: Sync from Sheets to populate local SQLite cache
     db.sync_from_sheets()
     
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)
 

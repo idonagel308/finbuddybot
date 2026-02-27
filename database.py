@@ -46,13 +46,20 @@ def close_connection():
 
 
 def backup_db():
-    """Creates a local backup of the database file."""
-    if os.path.exists(DB_NAME):
+    """Creates a local hot-backup of the database using the official sqlite3 backup API.
+    This is highly resilient to concurrent access and safely releases file handles."""
+    if os.path.exists(DB_NAME) and os.path.getsize(DB_NAME) > 0:
         backup_name = f"{DB_NAME}.bak"
         try:
-            import shutil
-            shutil.copy2(DB_NAME, backup_name)
-            logger.info(f"Database backup created: {backup_name}")
+            import sqlite3
+            src = sqlite3.connect(DB_NAME)
+            dst = sqlite3.connect(backup_name)
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
+            logger.info(f"Database hot-backup created: {backup_name}")
         except Exception as e:
             logger.error(f"Failed to create database backup: {e}")
 
