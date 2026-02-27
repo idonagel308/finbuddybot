@@ -24,9 +24,9 @@ from telegram import Update
 import asyncio
 
 import services.database as db
-import bot
-from models import ExpenseModel, ExpenseResponse
-from security import verify_api_key, rate_limit_check, verify_telegram_webapp
+from .bot_setup import get_application
+from .models import ExpenseModel, ExpenseResponse
+from .security import verify_api_key, rate_limit_check, verify_telegram_webapp
 
 load_dotenv()
 
@@ -36,28 +36,34 @@ logger = logging.getLogger(__name__)
 _start_time = time.time()
 
 # ── Lifespan & Bot ──
-telegram_app = bot.get_application()
+telegram_app = get_application()
+
+telegram_app = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup: Initialize DB synchronously (fast, local), then yield immediately
+    # so Cloud Run healthchecks pass. The Telegram bot inits in the background.
+    global telegram_app
     try:
         db.init_db()
-        
-        # Cloud-Native Persistence: Recover SQLite cache from Sheets in background
-        import threading
-        threading.Thread(target=db.sync_from_sheets, daemon=True).start()
+    except Exception as e:
+        logger.error(f"DB init failed: {e}")
 
-        if telegram_app:
+    async def _start_bot():
+        global telegram_app
+        try:
+            telegram_app = get_application()
             await telegram_app.initialize()
             await telegram_app.start()
-            logger.info("FinTechBot Webhook Engine Initialized and Started.")
-    except Exception as e:
-        logger.error(f"STARTUP CRITICAL ERROR: {e}")
-        # We don't re-raise; we want the API to start so we can see logs
-        
+            logger.info("Telegram bot started successfully.")
+        except Exception as e:
+            logger.error(f"Bot startup failed: {e}")
+
+    # Yield immediately so the web server binds port 8080, then start bot in background
+    asyncio.create_task(_start_bot())
     yield
-    
+
     # Shutdown
     if telegram_app:
         try:
@@ -65,7 +71,6 @@ async def lifespan(app: FastAPI):
             await telegram_app.shutdown()
         except Exception as e:
             logger.warning(f"Error during shutdown: {e}")
-
 
 app = FastAPI(
     title="FinTechBot API",
@@ -77,7 +82,7 @@ app = FastAPI(
 # ── Web App Static Files ──
 import os
 from fastapi.responses import FileResponse
-webapp_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "webapp")
+webapp_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "webapp")
 if os.path.exists(webapp_dir):
     app.mount("/static", StaticFiles(directory=webapp_dir), name="static")
     
