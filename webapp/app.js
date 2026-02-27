@@ -7,8 +7,10 @@ Chart.defaults.plugins.tooltip.padding = 12;
 let pulseChartInstance = null;
 let categoryChartInstance = null;
 
-// ---------- Mock Data Injection ---------- //
-const mockData = {
+// ---------- Global State & Helpers ---------- //
+const getTg = () => (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+
+const defaultData = {
     user: { name: 'Ido' },
     budget: { total: 5000, spent: 3450, savings: 0 },
     netFlow: { income: 8200, expenses: 3450 },
@@ -39,7 +41,7 @@ const mockData = {
     `
 };
 
-let currentPeriodData = JSON.parse(JSON.stringify(mockData)); // Deep copy to modify
+let currentPeriodData = JSON.parse(JSON.stringify(defaultData));
 
 // ---------- UI Updaters ---------- //
 function updateBudgetUI() {
@@ -116,17 +118,39 @@ function updateTransactionsUI() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-    // Phase 2: Bot Integration 
-    const tg = window.Telegram.WebApp;
-    tg.expand();
+    // Support both in-Telegram and direct browser access
+    const tg = getTg();
 
+    if (tg) {
+        tg.expand();
+        // Dynamic name from Telegram
+        const user = tg.initDataUnsafe?.user;
+        if (user && user.first_name) {
+            mockData.user.name = user.first_name;
+        }
+    }
+
+    updateGreeting();
     await loadPreferences();
     initDashboard();
 });
 
+function updateGreeting() {
+    const isHe = document.getElementById('lang-select').value === 'he';
+    const name = currentPeriodData.user?.name || (isHe ? 'עידו' : 'Ido');
+
+    document.querySelector('.greeting h1').innerHTML = isHe
+        ? `שלום, ${name} 👋`
+        : `Hello, ${name} 👋`;
+
+    document.querySelector('.greeting p').innerHTML = isHe
+        ? 'ברוך הבא למרכז הבקרה האישי שלך.'
+        : 'Welcome to your personal command center.';
+}
+
 async function initDashboard(year = null, month = null) {
-    const tg = window.Telegram.WebApp;
-    const initData = tg.initData || "";
+    const tg = getTg();
+    const initData = tg ? tg.initData : "";
 
     try {
         let url = `/api/webapp/dashboard`;
@@ -148,15 +172,14 @@ async function initDashboard(year = null, month = null) {
         });
         const catData = await catRes.ok ? await catRes.json() : {};
 
-        mockData.budget = dashData.budget;
-        mockData.netFlow = dashData.netFlow;
-        mockData.cashFlowSeries = dashData.cashFlowSeries;
-        mockData.transactions = dashData.transactions;
-        mockData.goal = dashData.goal;
-        mockData.insight = dashData.insight;
-        mockData.categories = catData;
-
-        currentPeriodData = JSON.parse(JSON.stringify(mockData));
+        // Update state with fetched data
+        currentPeriodData.budget = dashData.budget;
+        currentPeriodData.netFlow = dashData.netFlow;
+        currentPeriodData.cashFlowSeries = dashData.cashFlowSeries;
+        currentPeriodData.transactions = dashData.transactions;
+        currentPeriodData.goal = dashData.goal;
+        currentPeriodData.insight = dashData.insight;
+        currentPeriodData.categories = catData;
 
         updateHeaderUI();
         updateBudgetUI();
@@ -171,7 +194,8 @@ async function initDashboard(year = null, month = null) {
 
     } catch (e) {
         console.error("Dashboard Load Error:", e);
-        currentPeriodData = JSON.parse(JSON.stringify(mockData));
+        // Fallback to default copy if entire fetch fails
+        currentPeriodData = JSON.parse(JSON.stringify(defaultData));
         updateHeaderUI();
         updateBudgetUI();
         updateGoalUI();
@@ -445,8 +469,8 @@ function applyLayout() {
 }
 
 async function savePreferences(layout = null) {
-    const tg = window.Telegram.WebApp;
-    const initData = tg.initData || "";
+    const tg = getTg();
+    const initData = tg ? tg.initData : "";
 
     // Determine layout if not provided
     let layoutToSave = layout;
@@ -492,8 +516,8 @@ async function savePreferences(layout = null) {
 }
 
 async function loadPreferences() {
-    const tg = window.Telegram.WebApp;
-    const initData = tg.initData || "";
+    const tg = getTg();
+    const initData = tg ? tg.initData : "";
 
     let prefs = null;
     try {
@@ -675,7 +699,6 @@ document.getElementById('color-select').addEventListener('change', () => {
 document.getElementById('lang-select').addEventListener('change', (e) => {
     const isRtl = e.target.value === 'he';
     document.body.dir = isRtl ? 'rtl' : 'ltr';
-    document.querySelector('.greeting h1').innerHTML = isRtl ? 'שלום, עידו 👋' : 'Hello, Ido 👋';
-    document.querySelector('.greeting p').innerHTML = isRtl ? 'ברוך הבא למרכז הבקרה האישי שלך.' : 'Welcome to your personal command center.';
+    updateGreeting();
     savePreferences();
 });

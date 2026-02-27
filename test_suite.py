@@ -222,7 +222,7 @@ def test_database():
     _section("5. Database Operations")
 
     from unittest.mock import patch
-    with patch('sheets_etl.append_expense'), patch('sheets_etl.delete_expense'), patch('sheets_etl.rewrite_user_expenses'):
+    with patch('services.sheets_etl.append_expense'), patch('services.sheets_etl.delete_expense'), patch('services.sheets_etl.rewrite_user_expenses'):
         # Clean test DB
         if os.path.exists(TEST_DB):
             os.remove(TEST_DB)
@@ -377,7 +377,7 @@ def test_database():
 
     # Sheets sync test
     if count > 0:
-        with patch('sheets_etl.rewrite_user_expenses'):
+        with patch('services.sheets_etl.rewrite_user_expenses'):
             db._sync_local_to_sheets_for_user(TEST_USER) # Manually trigger mock
         _test("Sheets sync mock called without error", True)
 
@@ -393,7 +393,7 @@ def test_database():
 def test_security():
     _section("6. Security Module")
 
-    import security
+    import core.security as security
     import hmac as hmac_lib
 
     # API key comparison
@@ -454,7 +454,7 @@ def _generate_test_init_data(user_id: int, bot_token: str, auth_date: int = None
 def test_webapp_auth():
     _section("14. WebApp Security (HMAC-SHA256)")
     
-    import security
+    import core.security as security
     from fastapi import HTTPException
     
     # Ensure token is set in mock environment
@@ -582,7 +582,7 @@ def test_parse_expense_regex():
 def test_category_consistency():
     _section("8. Category Consistency Across Modules")
 
-    from models import ALLOWED_CATEGORIES as model_cats
+    from core.models import ALLOWED_CATEGORIES as model_cats
 
     _test("llm_helper categories match database",
           llm_helper.ALLOWED_CATEGORIES == db.ALLOWED_CATEGORIES,
@@ -656,8 +656,8 @@ def test_api():
     try:
         from fastapi.testclient import TestClient
         from unittest.mock import patch
-        from main import app
-        import security
+        from core.main import app
+        import core.security as security
         
         # Force a test API key for the test run so we don't rely on local .env state
         security.API_SECRET_KEY = "dummy_test_key_123"
@@ -680,7 +680,7 @@ def test_api():
         _test("API Auth rejected wrong key", bad_resp.status_code == 403)
             
         # Add expense via API
-        with patch('sheets_etl.append_expense') as mock_append:
+        with patch('services.sheets_etl.append_expense') as mock_append:
             payload = {
                 "user_id": test_user,
                 "amount": 75.0,
@@ -814,7 +814,7 @@ def _generate_test_init_data(user_id: int, bot_token: str, auth_date: int = None
 def test_webapp_auth():
     _section("14. WebApp Security (HMAC-SHA256)")
     
-    import security
+    import core.security as security
     from fastapi import HTTPException
     
     # Ensure token is set in mock environment
@@ -857,8 +857,8 @@ def test_webapp_api():
     
     try:
         from fastapi.testclient import TestClient
-        from main import app
-        import security
+        from core.main import app
+        import core.security as security
         
         # Setup mock security context
         security.TELEGRAM_BOT_TOKEN = "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
@@ -886,8 +886,14 @@ def test_webapp_api():
         _test("API POST /api/webapp/settings", resp_set.status_code == 200)
         
         # 5. Access Denied (No Auth)
-        resp_denied = client.get("/api/webapp/dashboard")
-        _test("API GET /api/webapp/dashboard (No Auth) rejected", resp_denied.status_code == 401)
+        import os
+        original_dev_id = os.environ.pop("ALLOWED_USER_ID", None)
+        try:
+            resp_denied = client.get("/api/webapp/dashboard")
+            _test("API GET /api/webapp/dashboard (No Auth) rejected", resp_denied.status_code == 401)
+        finally:
+            if original_dev_id is not None:
+                os.environ["ALLOWED_USER_ID"] = original_dev_id
         
     except ImportError:
         print("  ⚠️ fastapi/httpx not installed, skipping WebApp API tests")

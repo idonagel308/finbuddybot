@@ -9,6 +9,15 @@ credentials.json
 finance.db
 fintech.db
 fintech_test.db
+*.db-wal
+*.db-shm
+*.db.bak
+
+# Security
+service_account.json
+*.json
+!package.json
+!tsconfig.json
 
 # Python
 __pycache__/
@@ -16,6 +25,8 @@ __pycache__/
 *.pyo
 *.egg-info/
 dist/
+
+# Build & Environment
 build/
 *.egg
 venv/

@@ -19,6 +19,9 @@ credentials.json
 *.sqlite3
 fintech.db
 fintech_test.db
+*.db-wal
+*.db-shm
+*.db.bak
 
 # ── Block Local Python Environment ──
 venv/

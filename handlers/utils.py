@@ -13,6 +13,9 @@ _user_message_timestamps = defaultdict(list)
 
 def _display_category(category: str) -> str:
     """Convert a clean category string to an emoji-decorated display string."""
+    # If it already has an emoji (legacy data), pass through as-is
+    if any(ord(c) > 0xFFFF for c in category):
+        return category
     emoji = CATEGORY_EMOJIS.get(category, '❓')
     return f"{emoji} {category}"
 

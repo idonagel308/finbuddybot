@@ -1,47 +1,63 @@
 # FinTechBot 🏦
 
-FinTechBot is a premium, AI-powered Personal Wealth Manager and Financial Intelligence Engine built as a Telegram Bot and integrated Web Dashboard. It allows users to log their cash flow, uncover behavioral spending patterns, and optimize their wealth over time using natural language. 
-
-The bot is designed for production-level security, featuring cryptographic session validation and a robust microservice architecture.
+FinTechBot is a premium, AI-powered Personal Wealth Manager and Financial Intelligence Engine. It's built as a professional, modular Python application featuring a Telegram Bot interface and an integrated Web Dashboard.
 
 ## 🌟 Key Features
 
-- **Natural Language Expense Logging**: Simply tell the bot what you spent, e.g., *"Spent 150 shekels on an Uber"* or *"שילמתי 80 שקל על קפה"*. Gemini AI automatically parses amount, category, and description.
-- **Enhanced Web Dashboard**: A high-performance, responsive web app featuring:
-  - **The Pulse**: A cumulative daily cashflow and spending line chart.
-  - **Dynamic Insights**: AI-generated financial context synced instantly from your bot.
-  - **Real-Time Pacing**: Budget progress bars and net flow tracking.
-- **AI Insight Synchronization**: Insights generated via the Telegram Bot are stored centrally and shared with the Web Dashboard, ensuring a unified financial context across all devices.
-- **Auto-Categorization & Currency Conversion**: Maps natural text to predefined categories and converts foreign currencies (USD, EUR, GBP, etc.) to NIS using live exchange rates.
-- **Redesigned Settings Hub**: A centralized, inline settings menu (`/settings`) to manage your profile (Language, Currency, Budget, Age, Income, Goals) with instant persistence.
-- **Security-First Architecture**: 
-  - **HMAC-SHA256 Auth**: Official Telegram WebApp signature verification for secure dashboard access.
-  - **API-Key Hardening**: REST API secured with constant-time comparison and rate limiting.
-  - **ID-Isolation**: Multi-tenant data separation locked to the authorized Telegram User ID.
-- **Google Sheets Integration**: Automatically mirrors every transaction to a secure Google Sheet for external auditing.
+- **Natural Language Expense Logging**: Gemini AI automatically parses amount, category, and description from messages like *"Spent 150 on an Uber"* or Hebrew equivalents.
+- **Interactive Web Dashboard**:
+  - **The Pulse**: Real-time cumulative daily cashflow charts.
+  - **Dynamic Insights**: AI-generated financial behavioral analysis.
+  - **Customization**: Drag-and-drop widget layout, dark/light modes, and multi-language support.
+- **Production-Grade Security**: HMAC-SHA256 official Telegram authentication, API-key protection, and rate limiting.
+- **Enterprise-Ready Sync**: Background Google Sheets integration and daily database backups.
+- **Modular Architecture**: Clean separation of concerns for simplified maintenance and scaling.
 
-## ⚙️ Project Evolution (Phase 3 Complete) ✅
+## 📂 Project Structure
 
-We have successfully transitioned from a simple bot to a **Full-Stack Financial Ecosystem**. 
-- **Bidirectional Tracking**: Full support for both Revenue and Expenses.
-- **Permanent Personalization**: User settings (theme, budget, language) persist across sessions and platforms.
-- **Real-Time Sync**: Zero-latency data flow between Telegram, SQLite, and the Web UI.
+The project has been refactored from a monolith into a professional directory structure:
 
-## ⚙️ Architecture & Core Components
+### 1. `core/` (Foundation)
+- `core/main.py`: FastAPI application entry point and WebApp routes.
+- `core/bot_setup.py`: Bot initialization and handler registration.
+- `core/security.py`: Cryptographic validation (HMAC) and rate limiting.
+- `core/config.py`: Centralized environment configuration and logging.
+- `core/models.py`: Pydantic data models for the API.
 
-1. **Telegram Interface (`bot.py`)**: Handles asynchronous user interaction and inline callback routing.
-2. **AI Inference Engine (`llm_helper.py`)**: Integrates Gemini AI with secure pre-filtering and JSON-slicing logic.
-3. **Database Layer (`database.py`)**: SQLite (`fintech.db`) with optimized daily aggregation and user-preference persistence.
-4. **FastAPI Microservice (`main.py`)**: Secured REST API serving encrypted data to the Web Dashboard.
-5. **Security Module (`security.py`)**: Implements official Telegram WebAppData validation and IP-based rate limiting.
-6. **Robust Testing Engine (`test_suite.py`)**:
-   Contains **162+ unit and integration tests** guaranteeing cryptographic security and parsing accuracy.
+### 2. `services/` (Business Logic)
+- `services/database.py`: Optimized SQLite data layer with daily backups.
+- `services/llm_helper.py`: AI parsing and insight generation (Gemini AI).
+- `services/sheets_etl.py`: Non-blocking Google Sheets synchronization.
+- `services/currency.py`: Currency conversion logic with live fallbacks.
+- `services/charts.py`: Automated chart generation for Telegram.
 
-## 🚀 Deployment
+### 3. `handlers/` (UI & Routing)
+- `handlers/commands.py`: Telegram command logic (`/start`, `/menu`, etc.).
+- `handlers/messages.py`: Natural language processing and transaction routing.
+- `handlers/callbacks.py`: Interactive inline keyboard logic.
+- `handlers/settings_ui.py`: User profile management and settings navigation.
+- `handlers/utils.py`: Shared Telegram-specific helpers and decorators.
 
-- **Google Cloud Run**: Fully configured for serverless deployment.
-- **Docker**: Custom `Dockerfile` included with hardened `.dockerignore` policies.
-- **Continuous Integration**: Ready for Google Cloud Build with included `cloudbuild.yaml`.
+### 4. `webapp/` (Frontend)
+- `webapp/index.html`: Modern, glassmorphic dashboard interface.
+- `webapp/app.js`: Highly interactive SPA logic with fallback offline states.
+
+## 🚀 Getting Started
+
+### Local Setup
+1. **Clone & Install**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. **Configure**: Create a `.env` file with your `TELEGRAM_BOT_TOKEN`, `GOOGLE_API_KEY`, and `WEBAPP_URL`.
+3. **Run**:
+   ```bash
+   python main.py
+   ```
+
+### Deployment
+- **Docker**: The included `Dockerfile` is optimized for Google Cloud Run.
+- **CI/CD**: `cloudbuild.yaml` is provided for automated GCP deployments.
 
 ---
-*FinTechBot is verified with 162/162 successful tests.*
+*Verified with a comprehensive suite of 162+ unit and intelligence tests.*

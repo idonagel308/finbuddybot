@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from contextlib import contextmanager
 try:
-    import sheets_etl
+    import services.sheets_etl as sheets_etl
 except ImportError:
     sheets_etl = None
     logging.warning("Sheets ETL not available. Sync disabled.")
@@ -817,7 +817,7 @@ def sync_from_sheets():
                 for d in sheets_data
             ]
             cursor.executemany('''
-                INSERT INTO expenses (id, user_id, date, amount, category, type, description)
+                INSERT OR REPLACE INTO expenses (id, user_id, date, amount, category, type, description)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', insert_data)
             conn.commit()

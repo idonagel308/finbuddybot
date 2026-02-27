@@ -17,6 +17,9 @@ credentials.json
 fintech.db
 fintech_test.db
 finance.db
+*.db-wal
+*.db-shm
+*.db.bak
 
 # ── Block Python Environment & Cache ──
 .venv/
