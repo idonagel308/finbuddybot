@@ -1,5 +1,5 @@
 # Production Dockerfile for FinTechBot (Cloud Run Optimized)
-FROM python:3.11-slim
+FROM python:3.11-slim-bullseye
 
 # Security & Operations
 ENV PYTHONDONTWRITEBYTECODE=1

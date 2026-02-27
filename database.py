@@ -45,11 +45,33 @@ def close_connection():
         _local.conn = None
 
 
+def backup_db():
+    """Creates a local backup of the database file."""
+    if os.path.exists(DB_NAME):
+        backup_name = f"{DB_NAME}.bak"
+        try:
+            import shutil
+            shutil.copy2(DB_NAME, backup_name)
+            logger.info(f"Database backup created: {backup_name}")
+        except Exception as e:
+            logger.error(f"Failed to create database backup: {e}")
+
+def run_background_task(target, *args, **kwargs):
+    """Safely runs a task in a background thread without affecting the main process."""
+    def wrapper():
+        try:
+            target(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Background task {target.__name__} failed: {e}")
+
+    threading.Thread(target=wrapper, daemon=True).start()
+
 _local = threading.local()
 
 
 def init_db():
-    """Initializes the SQLite database. Dialect-agnostic hooks removed (reverting to pure SQLite)."""
+    """Initializes the SQLite database. Creates a backup first if the file exists."""
+    backup_db()
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -178,7 +200,7 @@ def add_expense(user_id: int, amount: float, category: str, description: str = "
             
             # Mirror to Sheets in background
             if sheets_etl:
-                threading.Thread(target=sheets_etl.append_expense, args=(inserted_id, user_id, date_str, amount, category, description)).start()
+                run_background_task(sheets_etl.append_expense, inserted_id, user_id, date_str, amount, category, description)
             
             return inserted_id
     except Exception as e:
@@ -358,7 +380,7 @@ def delete_expense(user_id: int, expense_id: int) -> bool:
             if success:
                 # Mirror to Sheets in background
                 if sheets_etl:
-                    threading.Thread(target=sheets_etl.delete_expense, args=(expense_id,)).start()
+                    run_background_task(sheets_etl.delete_expense, expense_id)
                 
             return success
     except Exception as e:
@@ -673,7 +695,7 @@ def _sync_local_to_sheets_for_user(user_id: int):
             
         # Background thread so the Telegram UI doesn't hang
         if sheets_etl:
-            threading.Thread(target=sheets_etl.rewrite_user_expenses, args=(user_id, formatted)).start()
+            run_background_task(sheets_etl.rewrite_user_expenses, user_id, formatted)
         else:
             logger.info(f"Skipping wholesale sync for user {user_id} (Sheets ETL disabled)")
         logger.info(f"Triggered background wholesale sync for user {user_id}")
@@ -686,6 +708,7 @@ def sync_from_sheets():
     Senior Developer Note: This is an idempotent 'Cold Start' recovery logic.
     """
     logger.info("Initializing Cold Start Recovery from Sheets...")
+    backup_db()  # Safety first
     try:
         if not sheets_etl:
             logger.info("Sync from Sheets skipped (ETL module missing or disabled).")
@@ -693,8 +716,18 @@ def sync_from_sheets():
         
         sheets_data = sheets_etl.fetch_all_data()
         if not sheets_data:
-            logger.info("No data found in Sheets or unable to connect. Proceeding with empty/existing local cache.")
+            logger.info("Cloud recovery returned no data. aborting wipe to preserve local truth.")
             return
+
+        # Integrity Check: If we have local data, but cloud is suspiciously small, abort.
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM expenses")
+            local_count = cursor.fetchone()[0]
+            
+            if local_count > 10 and len(sheets_data) < (local_count / 2):
+                logger.warning(f"Cloud data ({len(sheets_data)}) is significantly smaller than local data ({local_count}). Aborting recovery to prevent data loss.")
+                return
 
         with get_connection() as conn:
             cursor = conn.cursor()

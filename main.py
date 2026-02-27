@@ -41,21 +41,30 @@ telegram_app = bot.get_application()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    db.init_db()
-    
-    # Cloud-Native Persistence: Recover SQLite cache from Sheets in background
-    # This prevents blocking the port-bind health check on Cloud Run.
-    import threading
-    threading.Thread(target=db.sync_from_sheets, daemon=True).start()
+    try:
+        db.init_db()
+        
+        # Cloud-Native Persistence: Recover SQLite cache from Sheets in background
+        import threading
+        threading.Thread(target=db.sync_from_sheets, daemon=True).start()
 
-    if telegram_app:
-        await telegram_app.initialize()
-        await telegram_app.start()
-        logger.info("FinTechBot Webhook Engine Initialized and Started.")
+        if telegram_app:
+            await telegram_app.initialize()
+            await telegram_app.start()
+            logger.info("FinTechBot Webhook Engine Initialized and Started.")
+    except Exception as e:
+        logger.error(f"STARTUP CRITICAL ERROR: {e}")
+        # We don't re-raise; we want the API to start so we can see logs
+        
     yield
+    
+    # Shutdown
     if telegram_app:
-        await telegram_app.stop()
-        await telegram_app.shutdown()
+        try:
+            await telegram_app.stop()
+            await telegram_app.shutdown()
+        except Exception as e:
+            logger.warning(f"Error during shutdown: {e}")
 
 
 app = FastAPI(
