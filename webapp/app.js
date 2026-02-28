@@ -126,7 +126,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Dynamic name from Telegram
         const user = tg.initDataUnsafe?.user;
         if (user && user.first_name) {
-            mockData.user.name = user.first_name;
+            currentPeriodData.user.name = user.first_name;
         }
     }
 
@@ -204,7 +204,7 @@ async function initDashboard(year = null, month = null) {
         renderCategoryChart();
 
         const insightEl = document.getElementById('ai-insight');
-        insightEl.innerHTML = mockData.insight;
+        insightEl.innerHTML = currentPeriodData.insight;
         insightEl.classList.remove('skeleton-line', 'short');
     }
 }
@@ -433,8 +433,8 @@ saveGoalBtn.addEventListener('click', () => {
 
     currentPeriodData.goal.name = newName;
     currentPeriodData.goal.target = newTarget;
-    mockData.goal.name = newName;   // Persist to underlying mock too
-    mockData.goal.target = newTarget;
+    currentPeriodData.goal.name = newName;   // Persist to underlying state
+    currentPeriodData.goal.target = newTarget;
 
     goalEditForm.style.display = 'none';
     goalDisplaySection.style.display = 'block';
@@ -567,7 +567,7 @@ async function loadPreferences() {
         }
         const budget = prefs.budget_target || prefs.userBudget;
         if (budget) {
-            mockData.budget.total = budget;
+            currentPeriodData.budget.total = budget;
             currentPeriodData.budget.total = budget;
         }
 

@@ -15,25 +15,16 @@ logger = logging.getLogger(__name__)
 # Configure Gemini API
 api_key = os.getenv("GOOGLE_API_KEY")
 
-import google.genai as genai
-from google.genai import types
+import google.generativeai as genai
 
-# Lazy singleton client
-_client: genai.Client | None = None
+if api_key:
+    genai.configure(api_key=api_key)
+else:
+    logger.warning("GOOGLE_API_KEY not set — LLM features disabled")
 
-def _get_client() -> genai.Client | None:
-    global _client
-    if _client is None:
-        if not api_key:
-            logger.warning("GOOGLE_API_KEY not set — LLM features disabled")
-            return None
-        _client = genai.Client(api_key=api_key)
-    return _client
-
-# Models to try in order of preference (verified available via client.models.list())
+# Models to try in order of preference
 MODELS_TO_TRY = [
     "gemini-2.5-flash",  # Available and fast
-    "gemini-2.0-flash",  # Fallback
     "gemini-1.5-flash",  # Legacy fallback
 ]
 
@@ -299,16 +290,15 @@ def generate_insights(
     5. CRITICAL: You MUST translate your response into and respond strictly in the following language: {language}
     """
 
-    client = _get_client()
-    if not client:
+    if not api_key:
         return "Keep tracking your expenses to see where you can save!"
 
     for model_name in MODELS_TO_TRY:
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
                     temperature=0.5,
                     max_output_tokens=400,
                 )
@@ -346,15 +336,14 @@ def translate(text: str, target_language: str) -> str:
         f"Text to translate:\n{text}"
     )
     
-    client = _get_client()
-    if not client:
+    if not api_key:
         return text
 
     try:
-        response = client.models.generate_content(
-            model='gemini-2.0-flash-lite',
-            contents=prompt,
-            config=types.GenerateContentConfig(
+        model = genai.GenerativeModel('gemini-2.5-flash')
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
                 temperature=0.0,
                 max_output_tokens=800,
             )
@@ -410,14 +399,13 @@ Examples:
 <user_message>{safe_text}</user_message>
 """
 
-        client = _get_client()
-        if client:
+        if api_key:
             for model_name in MODELS_TO_TRY:
                 try:
-                    response = client.models.generate_content(
-                        model=model_name,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(
+                        prompt,
+                        generation_config=genai.types.GenerationConfig(
                             temperature=0.1,
                         )
                     )
