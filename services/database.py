@@ -548,6 +548,8 @@ def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'N
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, age, yearly_income, currency, language, additional_info))
             conn.commit()
+            
+        _sync_profiles_to_sheets()
     except Exception as e:
         logger.error(f"Error setting profile: {e}")
         raise
@@ -634,6 +636,8 @@ def save_user_settings(user_id: int, theme: str = None, layout: str = None, budg
             ''', (user_id, theme, layout, budget_target, financial_goal, language, accent_color,
                   theme, layout, budget_target, financial_goal, language, accent_color))
             conn.commit()
+            
+        _sync_settings_to_sheets()
     except Exception as e:
         logger.error(f"Error saving user settings: {e}")
 
@@ -778,6 +782,32 @@ def _sync_local_to_sheets_for_user(user_id: int):
     except Exception as e:
         logger.error(f"Failed to initiate wholesale sync: {e}")
 
+def _sync_profiles_to_sheets():
+    """Pushes all profiles to Google Sheets."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id, age, yearly_income, currency, language, additional_info FROM profiles')
+            rows = cursor.fetchall()
+            
+        if sheets_etl:
+            run_background_task(sheets_etl.rewrite_profiles, rows)
+    except Exception as e:
+        logger.error(f"Failed to initiate profiles sync to sheets: {e}")
+
+def _sync_settings_to_sheets():
+    """Pushes all user settings to Google Sheets."""
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id, theme, layout, budget_target, financial_goal, language, accent_color FROM user_settings')
+            rows = cursor.fetchall()
+            
+        if sheets_etl:
+            run_background_task(sheets_etl.rewrite_settings, rows)
+    except Exception as e:
+        logger.error(f"Failed to initiate settings sync to sheets: {e}")
+
 def sync_from_sheets():
     """
     Recovers the local SQLite cache from Google Sheets.
@@ -822,7 +852,43 @@ def sync_from_sheets():
             ''', insert_data)
             conn.commit()
             
-        logger.info(f"Cold Start complete. Synced {len(insert_data)} expenses from Sheets.")
+        logger.info(f"Expenses recovery complete. Synced {len(insert_data)} expenses from Sheets.")
+
+        # Sync Profiles
+        profiles_data = sheets_etl.fetch_all_profiles()
+        if profiles_data:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM profiles')
+                insert_profiles = [
+                    (p['user_id'], p.get('age'), p.get('yearly_income', 0.0), p.get('currency', 'NIS'), p.get('language', 'English'), p.get('additional_info', ''))
+                    for p in profiles_data
+                ]
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO profiles (user_id, age, yearly_income, currency, language, additional_info)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', insert_profiles)
+                conn.commit()
+            logger.info(f"Profiles recovery complete. Synced {len(insert_profiles)} profiles from Sheets.")
+
+        # Sync Settings
+        settings_data = sheets_etl.fetch_all_settings()
+        if settings_data:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM user_settings')
+                insert_settings = [
+                    (s['user_id'], s.get('theme', 'dark'), s.get('layout'), s.get('budget_target', 0), s.get('financial_goal'), s.get('language', 'English'), s.get('accent_color', 'indigo'))
+                    for s in settings_data
+                ]
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO user_settings (user_id, theme, layout, budget_target, financial_goal, language, accent_color)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', insert_settings)
+                conn.commit()
+            logger.info(f"Settings recovery complete. Synced {len(insert_settings)} settings from Sheets.")
+
+        logger.info("Cold Start all entities recovery finished successfully.")
     except Exception as e:
         logger.error(f"Failed to sync from Sheets during Cold Start: {e}")
 

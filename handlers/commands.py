@@ -25,6 +25,21 @@ def _get_main_menu_keyboard() -> InlineKeyboardMarkup:
 @_private_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
+    # Persistent custom keyboard at the bottom of the screen
+    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+    from telegram import ReplyKeyboardMarkup, KeyboardButton
+    reply_keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton(text="🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))]],
+        resize_keyboard=True,
+        persistent=True
+    )
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="A persistent Web Dashboard button has been added to your screen below! 👇",
+        reply_markup=reply_keyboard
+    )
+
     await _safe_send(context.bot, update.effective_chat.id, 
         "🏦 *Welcome to FinTechBot Premium.*\n\n"
         "I am your Personal Wealth Manager and Financial Intelligence Engine.\n\n"

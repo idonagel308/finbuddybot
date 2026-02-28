@@ -45,8 +45,10 @@ async def lifespan(app: FastAPI):
     global telegram_app
     try:
         db.init_db()
+        # Cold Start: Sync from Sheets to populate local SQLite cache
+        db.sync_from_sheets()
     except Exception as e:
-        logger.error(f"DB init failed: {e}")
+        logger.error(f"DB init/sync failed: {e}")
 
     async def _start_bot():
         global telegram_app
@@ -403,10 +405,6 @@ async def webapp_transaction(
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    
-    db.init_db()
-    # Cold Start: Sync from Sheets to populate local SQLite cache
-    db.sync_from_sheets()
     
     uvicorn.run(app, host="0.0.0.0", port=port)
 

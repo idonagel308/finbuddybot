@@ -370,13 +370,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.to_thread(db.save_insight, telegram_id, now.year, now.month, insight)
                 safe_insight = _escape_markdown(insight)
                 await query.edit_message_text(
-                    text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", parse_mode='Markdown'
+                    text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", 
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
                 )
             except Exception as e:
                 logger.error(f"Error generating insights: {e}")
                 await query.edit_message_text(
                     text="⚠️ *Error*\n\nThe AI ran into an issue. Please try again later.",
-                    parse_mode='Markdown'
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
                 )
 
         elif data in ('settings_menu', 'settings_tools'):

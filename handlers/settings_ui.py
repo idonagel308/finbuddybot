@@ -27,7 +27,12 @@ def _get_settings_keyboard(profile: dict | None) -> InlineKeyboardMarkup:
     age     = str(p['age']) if p['age'] != 18 or profile else '— Not set'
     income  = f"{p['yearly_income']:,.0f}" if p['yearly_income'] else '— Not set'
     goals   = '✅ Set' if p['additional_info'] else '— Not set'
+    import os
+    from telegram import WebAppInfo
+    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+
     keyboard = [
+        [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
         [InlineKeyboardButton(f"🌐 Language: {lang}", callback_data='settings_set_lang')],
         [InlineKeyboardButton(f"💱 Currency: {cur}", callback_data='settings_set_currency')],
         [InlineKeyboardButton("💰 Set Monthly Budget", callback_data='settings_set_budget')],

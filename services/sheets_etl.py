@@ -49,12 +49,17 @@ def _retry(func):
         raise last_exception
     return wrapper
 
-def _get_sheet():
-    """Returns the authenticated Worksheet using ADC (Application Default Credentials)."""
+def _get_worksheet(title="Expenses", headers=None):
+    """Returns the authenticated Worksheet. Creates it if missing."""
     global _cached_sheet, _sheet_cache_time
 
-    if _cached_sheet and (time.time() - _sheet_cache_time) < SHEET_CACHE_TTL:
-        return _cached_sheet
+    cache_key = f"{title}_sheet"
+    if not hasattr(_get_worksheet, "cache"):
+        _get_worksheet.cache = {}
+        _get_worksheet.cache_time = {}
+
+    if cache_key in _get_worksheet.cache and (time.time() - _get_worksheet.cache_time[cache_key]) < SHEET_CACHE_TTL:
+        return _get_worksheet.cache[cache_key]
 
     sheet_id = os.getenv("GOOGLE_SHEET_ID")
     if not sheet_id:
@@ -62,25 +67,28 @@ def _get_sheet():
         return None
 
     try:
-        # SECURE AUTH: Use credentials from the environment (ADC)
-        # In Cloud Run, this uses the attached Service Account.
-        # Locally, this uses GOOGLE_APPLICATION_CREDENTIALS env var.
         creds, project = google.auth.default(scopes=SCOPES)
         client = gspread.authorize(creds)
         doc = client.open_by_key(sheet_id)
         
-        # Auto-Heal: Ensure 'Expenses' worksheet exists
         try:
-            sheet = doc.worksheet("Expenses")
+            sheet = doc.worksheet(title)
         except gspread.exceptions.WorksheetNotFound:
-            logger.warning("'Expenses' worksheet not found. Creating it...")
-            sheet = doc.add_worksheet(title="Expenses", rows="1000", cols="20")
-            headers = ["ID", "User ID", "Date", "Amount", "Category", "Description"]
-            sheet.append_row(headers)
-            logger.info("Created 'Expenses' worksheet with default headers.")
+            logger.warning(f"'{title}' worksheet not found. Creating it...")
+            sheet = doc.add_worksheet(title=title, rows="1000", cols="20")
+            if not headers:
+                if title == "Expenses":
+                    headers = ["ID", "User ID", "Date", "Amount", "Category", "Description"]
+                elif title == "Profiles":
+                    headers = ["User ID", "Age", "Yearly Income", "Currency", "Language", "Additional Info"]
+                elif title == "Settings":
+                    headers = ["User ID", "Theme", "Layout", "Budget Target", "Financial Goal", "Language", "Accent Color"]
+            if headers:
+                sheet.append_row(headers)
+            logger.info(f"Created '{title}' worksheet with default headers.")
 
-        _cached_sheet = sheet
-        _sheet_cache_time = time.time()
+        _get_worksheet.cache[cache_key] = sheet
+        _get_worksheet.cache_time[cache_key] = time.time()
         return sheet
     except DefaultCredentialsError:
         logger.error("No Google Application Default Credentials found.")
@@ -96,7 +104,7 @@ def _is_hebrew(text: str) -> bool:
 @_retry
 def append_expense(expense_id, user_id, date, amount, category, description):
     """Appends an expense to the sheet and applies formatting with retry logic."""
-    sheet = _get_sheet()
+    sheet = _get_worksheet("Expenses")
     if not sheet: return
 
     safe_desc = str(description)
@@ -121,7 +129,7 @@ def append_expense(expense_id, user_id, date, amount, category, description):
 @_retry
 def delete_expense(expense_id):
     """Deletes an expense from the sheet with retry logic."""
-    sheet = _get_sheet()
+    sheet = _get_worksheet("Expenses")
     if not sheet: return
 
     ids = sheet.col_values(1)
@@ -134,8 +142,8 @@ def delete_expense(expense_id):
 
 @_retry
 def fetch_all_data():
-    """Retrieves all rows from the sheet for database recovery with retry logic."""
-    sheet = _get_sheet()
+    """Retrieves all rows from the Expenses sheet for database recovery with retry logic."""
+    sheet = _get_worksheet("Expenses")
     if not sheet: return []
     
     all_vals = sheet.get_all_values()
@@ -166,7 +174,7 @@ def rewrite_user_expenses(user_id: int, new_rows: list):
     Replaces all expenses for a specific user in the sheet.
     Used for mass-deletions to keep the sheet in perfect sync with the SQLite cache.
     """
-    sheet = _get_sheet()
+    sheet = _get_worksheet("Expenses")
     if not sheet: return
 
     # Get all current data to preserve any other users or headers
@@ -191,4 +199,87 @@ def rewrite_user_expenses(user_id: int, new_rows: list):
         sheet.update(values=retained_rows, range_name='A1')
         
     logger.info(f"Rewrote sheet. Maintained {len(retained_rows)-len(new_rows)-1} foreign rows, added {len(new_rows)} fresh rows for user {user_id}.")
+
+@_retry
+def fetch_all_profiles():
+    """Retrieves all profiles for database recovery."""
+    sheet = _get_worksheet("Profiles")
+    if not sheet: return []
+    
+    all_vals = sheet.get_all_values()
+    if not all_vals or len(all_vals) <= 1: return []
+    
+    cleaned = []
+    for r in all_vals[1:]:
+        if len(r) < 6: continue
+        try:
+            cleaned.append({
+                'user_id': int(r[0]),
+                'age': int(r[1]) if r[1] else None,
+                'yearly_income': float(r[2]) if r[2] else 0.0,
+                'currency': str(r[3]),
+                'language': str(r[4]),
+                'additional_info': str(r[5])
+            })
+        except ValueError:
+            continue
+    return cleaned
+
+@_retry
+def rewrite_profiles(profiles_data: list):
+    """Rewrites the entire Profiles worksheet."""
+    sheet = _get_worksheet("Profiles")
+    if not sheet: return
+    
+    headers = ["User ID", "Age", "Yearly Income", "Currency", "Language", "Additional Info"]
+    rows = [headers]
+    for p in profiles_data:
+        rows.append([p[0], p[1], p[2], p[3], p[4], p[5]])
+        
+    sheet.clear()
+    if rows:
+        sheet.update(values=rows, range_name='A1')
+    logger.info(f"Wholesale sync of {len(profiles_data)} profiles to Sheets complete.")
+
+@_retry
+def fetch_all_settings():
+    """Retrieves all user settings for database recovery."""
+    sheet = _get_worksheet("Settings")
+    if not sheet: return []
+    
+    all_vals = sheet.get_all_values()
+    if not all_vals or len(all_vals) <= 1: return []
+    
+    cleaned = []
+    for r in all_vals[1:]:
+        if len(r) < 7: continue
+        try:
+            cleaned.append({
+                'user_id': int(r[0]),
+                'theme': str(r[1]) if r[1] else None,
+                'layout': str(r[2]) if r[2] else None,
+                'budget_target': float(r[3]) if r[3] else None,
+                'financial_goal': str(r[4]) if r[4] else None,
+                'language': str(r[5]) if r[5] else None,
+                'accent_color': str(r[6]) if r[6] else None
+            })
+        except ValueError:
+            continue
+    return cleaned
+
+@_retry
+def rewrite_settings(settings_data: list):
+    """Rewrites the entire Settings worksheet."""
+    sheet = _get_worksheet("Settings")
+    if not sheet: return
+    
+    headers = ["User ID", "Theme", "Layout", "Budget Target", "Financial Goal", "Language", "Accent Color"]
+    rows = [headers]
+    for s in settings_data:
+        rows.append([s[0], s[1], s[2], s[3], s[4], s[5], s[6]])
+        
+    sheet.clear()
+    if rows:
+        sheet.update(values=rows, range_name='A1')
+    logger.info(f"Wholesale sync of {len(settings_data)} settings to Sheets complete.")
 

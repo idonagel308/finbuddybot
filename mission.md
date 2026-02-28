@@ -1,71 +1,56 @@
-# FinTechBot: Phase 3 Mission — The Secure Environment 🔐
+# FinTechBot: Phase 4 Mission — Persistence Integrity & Seamless UX �
 
 ## Executive Summary
-Convert the interactive Web Dashboard from a prototype into a production-grade **Secure Financial Environment**. Phase 3 focuses on **Zero-Trust Architecture**, **SDK Stability**, and **Input Accuracy**: ensuring data privacy through Telegram's official HMAC authentication, restoring reliability via the legacy Gemini SDK, and perfecting natural language understanding for financial entries.
+Phase 4 addresses critical gaps in data longevity and user experience. Currently, the system suffers from "amnesia" regarding user profiles and settings upon restart, and the Telegram bot menu has navigational dead-ends. This phase will implement **Multi-Entity Cloud Sync** (recovering not just expenses, but also profiles and settings from Google Sheets) and a **Unified Navigation System** for the bot.
 
 ---
 
 ## 🎯 Core Objectives
 
-### 1. Zero-Trust Authentication (The Vault)
-Shift from manual JSON parameters to mandatory cryptographic validation for all API requests.
-- **HMAC Signature Verification:** Implement the official Telegram `initData` handshake in `security.py`. Validate the `hash` using the `TELEGRAM_BOT_TOKEN`.
-- **User Integrity:** No `user_id` should be accepted from the URL or Body if it doesn't match the ID embedded in the cryptographically signed `initData`.
-- **Session Control:** Enforce a 24-hour expiration on all WebApp authentication signatures.
+### 1. Unified Cloud-Local Persistence (Anti-Amnesia)
+Ensure that *every* user-specific data point survives a server restart or container wipe.
+- **Entity Expansion:** Extend `sheets_etl.py` and `database.py` to synchronize three core entities:
+    - **Expenses:** (Existing) Historical transaction data.
+    - **Profiles:** User age, income, currency, and language preferences.
+    - **Settings:** Web dashboard layout, theme, and financial goals.
+- **Cold-Start Recovery 2.0:** On startup, the system must detect missing data in all three tables and pull the latest "truth" from the corresponding Google Sheets worksheets.
+- **Reliability:** Implement mandatory `sync_from_sheets` inside the FastAPI `lifespan` event to ensure the bot is never "blind" to old data on boot.
 
-### 2. Deep Insights Synchronization
-Bridge the gap between the Telegram Bot and the Web Dashboard.
-- **Insight Persistence:** Store AI-generated behavioral analysis in the `insights` table (SQLite). 
-- **WebApp Sync:** When a user opens the dashboard, it automatically fetches the latest analysis generated in the bot for that specific month/year.
-- **Fallback Logic:** If no insight exists, provide a "Generate Insight" call-to-action that links back to the bot.
+### 2. High-Fidelity Navigation (The Loop)
+Eliminate navigational friction in the Telegram Bot by ensuring every action has a clear path back to the dashboard.
+- **Menu Accessibility:** 
+    - Add a "🌐 Web Dashboard" button to the `settings_tools` menu.
+    - Ensure the "Back to Menu" button is present on *all* secondary views (Last Transactions, Category Charts, AI Insights).
+- **Persistent Header:** Ensure that after specific actions (like `/undo`), the bot re-presents the Main Menu to keep the user in the flow.
 
-### 3. Permanent Personalization (Server-Side)
-Move from browser-only `localStorage` to persistent database storage for a "seamless experience everywhere."
-- **Settings Table:** Implement a `user_settings` table to store:
-  - Dashboard Layout (Widget order and visibility).
-  - Aesthetic Preferences (Selected theme and accent colors).
-  - Custom Financial Goals & Budget targets.
-- **Auto-Sync:** On login, the dashboard fetches these preferences to restore the user's customized command center instantly.
-
-### 4. Advanced Historical Analysis
-utilize the dashboard's "Time Period" controls for more than just aesthetics.
-  - **Real-Time Pacing:** Replace mock "Pulse" data with real day-by-day cumulative spending for the selected month.
-- **Year-Over-Year View:** Implement a "Years" view that compares the current year's net flow vs. previous years.
-
-### 5. SDK Stability & Intelligence Audit
-Ensure the bot understands the user and remains stable.
-- **Legacy SDK Restoration:** Revert and lock the system to `google-generativeai` (legacy Gemini SDK) to prevent breaking changes from the new SDK.
-- **Natural Language Audit:** Verify the bot correctly extracts amounts, categories, and types (income vs expense) from complex conversational inputs.
-- **Error Handling:** Implement graceful fallbacks for LLM rate limits or connection failures.
+### 3. Profile Integrity Audit
+Perfect the capture and storage of user attributes.
+- **Auto-Sync on Update:** Any change to user profile (age, income) must trigger an immediate background sync to the "Profiles" worksheet in Google Sheets.
+- **Validation:** Enforce strict type checking to prevent corrupted state from breaking the AI engine.
 
 ---
 
 ## 🛠️ Execution Roadmap
 
-### Step 1: Security Hardening
-- [ ] Finalize `verify_telegram_webapp` in `security.py`.
-- [ ] Remove all hardcoded `TEMP_USER_ID` or fallback logic in `main.py` and `app.js`.
-- [ ] Update `test_suite.py` with an HMAC generator to simulate secure requests.
+### Step 1: Multi-Sheet Support
+- [ ] Update `sheets_etl.py` to handle multiple worksheets: `Expenses`, `Profiles`, and `Settings`.
+- [ ] Implement `fetch_all_profiles()` and `fetch_all_settings()` in `sheets_etl.py`.
+- [ ] Implement `rewrite_profiles()` and `rewrite_settings()` for wholesale cloud updates.
 
-### Step 2: Persistence & Sync
-- [ ] Create `user_settings` table in `database.py`.
-- [ ] Implement `POST /api/webapp/settings` to save preferences from the Modal.
-- [ ] Refactor `app.js` to load initial state from the API instead of `localStorage`.
+### Step 2: Persistence Overhaul
+- [ ] Refactor `database.py`'s `sync_from_sheets()` to iterate through all entities and restore them to SQLite.
+- [ ] Move the `sync_from_sheets()` trigger from `main.py`'s `if __name__ == "__main__"` to the `lifespan` startup event.
+- [ ] Ensure `set_profile` and `save_user_settings` trigger a Sheets sync.
 
-### Step 3: Data Integrity
-- [ ] Refactor "The Pulse" data aggregator to provide real daily expenditure sums.
-- [ ] Perform a "Deep Audit" of the `expenses` table to ensure category mapping is 100% consistent between the Bot UI and Web UI.
-
-### Step 4: Intelligence & Stability Restoration
-- [ ] Revert and lock `google-generativeai` in `requirements.txt`.
-- [ ] Audit `llm_helper.py` classification logic to ensure 95%+ accuracy.
-- [ ] Run comprehensive input tests (English & Hebrew) to verify extraction reliability.
+### Step 3: UX & Navigation
+- [ ] Add `[InlineKeyboardButton("⬅️ Back to Menu", callback_data='main_menu')]` to all relevant keyboard responses in `callbacks.py`.
+- [ ] Update `handlers/settings_ui.py` to include a "🌐 Open Dashboard" button.
+- [ ] Implement a `main_menu` callback handler to return to the root dashboard from any state.
 
 ---
 
 ## ✅ Success Metrics
-1. **User B cannot see User A's data**, even if they know their ID.
-2. **Settings persist** if the user clears their browser cache.
-3. **AI Insights** generated in the Telegram chat appear instantly on the Web Dashboard for the correct month.
-4. **95%+ Input Accuracy** on complex, natural language transaction entries without system crashes.
-5. **Legacy SDK Locked** and functional without `google-genai` conflicts.
+1. **Zero Data Loss:** After a full server restart, `/menu` correctly displays the user's previously set age, income, AND historical expenses.
+2. **Infinite Loop:** A user can navigate from Menu -> Chart -> Menu -> Settings -> Dashboard without typing a single slash command.
+3. **Cloud Mirror:** The Google Sheet contains three worksheets (`Expenses`, `Profiles`, `Settings`) that perfectly reflect the local SQLite state.
+4. **Fast Startup:** The `lifespan` sync doesn't block API healthchecks but ensures data is ready before the first user response.
