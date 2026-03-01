@@ -3,11 +3,9 @@
 # ── Block Environment & Credentials ──
 .env
 .env.yaml
-GOOGLE_APPLICATION_CREDENTIALS
-service_account.json
-credentials.json
-*.json
-!requirements.json
+# ── Allow Credentials for Cloud Sync ──
+!service_account.json
+!requirements.txt
 !package.json
 
 # ── Block Databases ──
