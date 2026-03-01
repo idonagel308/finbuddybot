@@ -901,6 +901,33 @@ def test_webapp_api():
         _test(f"WebApp API Integration Error: {e}", False)
 
 
+# ══════════════════════════════════════════════════════════════
+# 16. CLOUD DEPLOYMENT CONFIGURATION
+# ══════════════════════════════════════════════════════════════
+
+def test_cloud_deployment_configuration():
+    _section("16. Cloud Deployment Configuration")
+    import subprocess
+    import json
+    try:
+        # Check if gcloud is available and fetch the trigger
+        result = subprocess.run(
+            ["gcloud", "beta", "builds", "triggers", "describe", "fintech-bot-deploy", "--format=json"],
+            capture_output=True, text=True, check=False
+        )
+        if result.returncode == 0:
+            trigger_data = json.loads(result.stdout)
+            subs = trigger_data.get("substitutions", {})
+            _test("GCP Trigger 'fintech-bot-deploy' exists", True)
+            _test("Trigger has _TELEGRAM_BOT_TOKEN", "_TELEGRAM_BOT_TOKEN" in subs)
+            _test("Trigger has _GOOGLE_API_KEY", "_GOOGLE_API_KEY" in subs)
+            _test("Trigger has _WEBAPP_URL", "_WEBAPP_URL" in subs)
+        else:
+            _test("GCP Trigger 'fintech-bot-deploy' found", False, "Could not fetch trigger. Is gcloud authenticated?")
+    except FileNotFoundError:
+        print("  ⚠️ gcloud CLI not found, skipping deployment config tests")
+    except Exception as e:
+        _test(f"Deployment config error: {e}", False)
 
 # ══════════════════════════════════════════════════════════════
 # MAIN
@@ -927,6 +954,7 @@ if __name__ == "__main__":
     test_insight_sync()
     test_webapp_auth()
     test_webapp_api()
+    test_cloud_deployment_configuration()
 
     print(f"\n{'='*60}")
     print(f"  RESULTS: {_passed}/{_total} passed, {_failed} failed")

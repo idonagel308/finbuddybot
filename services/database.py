@@ -90,37 +90,31 @@ def sync_from_sheets(user_id: int = None, limit: int = 100):
         return
         
     try:
-        sheet = sheets_etl._get_sheet()
-        if not sheet:
-            logger.warning("Could not get sheet for sync.")
-            return
-            
-        # Get all records, ignoring the header row
-        records = sheet.get_all_values()[1:]
+        # Get all records from the cloud via the proper ETL fetcher
+        records = sheets_etl.fetch_all_data()
         if not records:
+            logger.info("No records found in Sheets to sync.")
             return
             
-        # Optional: filter by user and slice
+        # Filter by user if requested
         if user_id:
-            records = [r for r in records if len(r) > 1 and str(r[1]) == str(user_id)]
+            records = [r for r in records if r['user_id'] == user_id]
             
-        # Take the most recent `limit` rows (assuming appended at the bottom)
+        # Take the most recent `limit` rows
         records = records[-limit:]
         
         with get_connection() as conn:
             cursor = conn.cursor()
-            for row in records:
+            for r in records:
                 try:
-                    # Expected: ID, User ID, Date, Amount, Category, Description
-                    if len(row) < 5:
-                        continue
-                        
-                    # Sheet might not have the ID if manual, but let's just insert
-                    r_uid = int(row[1])
-                    r_date = row[2]
-                    r_amt = float(row[3].replace(',', '').replace('₪', '').strip())
-                    r_cat = row[4]
-                    r_desc = row[5] if len(row) > 5 else ""
+                    r_uid = r['user_id']
+                    r_date = r['date']
+                    r_amt = float(r['amount'])
+                    r_cat = r['category']
+                    r_desc = r['description']
+                    
+                    # Auto route income categories like in add_expense
+                    r_type = 'income' if r_cat in {'Salary', 'Investment', 'Gift'} else 'expense'
                     
                     # Insert if it doesn't already exist (rough deduplication)
                     cursor.execute('''
@@ -130,10 +124,10 @@ def sync_from_sheets(user_id: int = None, limit: int = 100):
                     if not cursor.fetchone():
                         cursor.execute('''
                             INSERT INTO expenses (user_id, date, amount, category, type, description)
-                            VALUES (?, ?, ?, ?, 'expense', ?)
-                        ''', (r_uid, r_date, r_amt, r_cat, r_desc))
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (r_uid, r_date, r_amt, r_cat, r_type, r_desc))
                 except Exception as row_error:
-                    logger.warning(f"Failed to sync row from sheets: {row} - {row_error}")
+                    logger.warning(f"Failed to sync row from sheets dictionary: {r} - {row_error}")
             
             conn.commit()
             logger.info(f"Successfully synced up to {len(records)} recent expenses from Sheets.")
@@ -226,6 +220,13 @@ def init_db():
             try: cursor.execute("ALTER TABLE profiles ADD COLUMN additional_info TEXT")
             except: pass
             
+            # Migration: ensure existing income categories are marked correctly
+            cursor.execute('''
+                UPDATE expenses 
+                SET type = 'income' 
+                WHERE category IN ('Salary', 'Investment', 'Gift') AND type = 'expense'
+            ''')
+
             conn.commit()
             logger.info("Database initialized (SQLite Cache).")
     except Exception as e:
@@ -259,6 +260,10 @@ def add_expense(user_id: int, amount: float, category: str, description: str = "
     _validate_expense(amount, category, description)
     if description:
         description = description[:MAX_DESCRIPTION_LENGTH].strip()
+
+    # Auto-route income categories if not explicitly set
+    if transaction_type == "expense" and category in {'Salary', 'Investment', 'Gift'}:
+        transaction_type = "income"
 
     try:
         with get_connection() as conn:
@@ -781,6 +786,31 @@ def _sync_local_to_sheets_for_user(user_id: int):
         logger.info(f"Triggered background wholesale sync for user {user_id}")
     except Exception as e:
         logger.error(f"Failed to initiate wholesale sync: {e}")
+
+def sync_all_to_sheets():
+    """Pushes the entire local SQLite cache to Google Sheets. Use for shutdown consistency."""
+    try:
+        if not sheets_etl:
+            logger.info("Skipping global shutdown sync (Sheets ETL disabled)")
+            return
+            
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, user_id, date, amount, category, type, description FROM expenses ORDER BY date ASC'
+            )
+            rows = cursor.fetchall()
+            
+        formatted = []
+        for r in rows:
+            formatted.append([r[0], r[1], r[2], r[3], r[4], r[5], r[6] or ""])
+            
+        # Blocking call (not backgrounded) because this runs on shutdown!
+        logger.info(f"Running global shutdown sync for {len(formatted)} expenses...")
+        sheets_etl.rewrite_all_expenses(formatted)
+        logger.info("Global shutdown sync finished successfully.")
+    except Exception as e:
+        logger.error(f"Failed during global shutdown sync: {e}")
 
 def _sync_profiles_to_sheets():
     """Pushes all profiles to Google Sheets."""

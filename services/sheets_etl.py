@@ -73,21 +73,31 @@ def _get_worksheet(title="Expenses", headers=None):
         
         try:
             sheet = doc.worksheet(title)
+            # Check if headers exist, add them if empty
+            if not sheet.row_values(1):
+                if not headers:
+                    if title == "Expenses":
+                        headers = ["Transaction ID", "User Account ID", "Transaction Date", "Amount (NIS)", "Action Category", "Description / Notes"]
+                    elif title == "Profiles":
+                        headers = ["User ID", "Age", "Yearly Income", "Currency", "Language", "Additional Info"]
+                    elif title == "Settings":
+                        headers = ["User ID", "Theme", "Layout", "Budget Target", "Financial Goal", "Language", "Accent Color"]
+                if headers:
+                    sheet.append_row(headers)
+                    logger.info(f"Added descriptive headers to existing '{title}' worksheet.")
         except gspread.exceptions.WorksheetNotFound:
             logger.warning(f"'{title}' worksheet not found. Creating it...")
             sheet = doc.add_worksheet(title=title, rows="1000", cols="20")
             if not headers:
                 if title == "Expenses":
-                    headers = ["ID", "User ID", "Date", "Amount", "Category", "Description"]
+                    headers = ["Transaction ID", "User Account ID", "Transaction Date", "Amount (NIS)", "Action Category", "Description / Notes"]
                 elif title == "Profiles":
                     headers = ["User ID", "Age", "Yearly Income", "Currency", "Language", "Additional Info"]
                 elif title == "Settings":
                     headers = ["User ID", "Theme", "Layout", "Budget Target", "Financial Goal", "Language", "Accent Color"]
             if headers:
                 sheet.append_row(headers)
-            logger.info(f"Created '{title}' worksheet with default headers.")
-
-        _get_worksheet.cache[cache_key] = sheet
+            logger.info(f"Created '{title}' worksheet with descriptive headers.")
         _get_worksheet.cache_time[cache_key] = time.time()
         return sheet
     except DefaultCredentialsError:
@@ -199,6 +209,30 @@ def rewrite_user_expenses(user_id: int, new_rows: list):
         sheet.update(values=retained_rows, range_name='A1')
         
     logger.info(f"Rewrote sheet. Maintained {len(retained_rows)-len(new_rows)-1} foreign rows, added {len(new_rows)} fresh rows for user {user_id}.")
+
+@_retry
+def rewrite_all_expenses(all_rows: list):
+    """
+    Replaces ALL expenses in the sheet with the provided master list.
+    Used during application shutdown to guarantee the Google Sheet perfectly
+    mirrors the local SQLite truth, removing any manual garbage inserted in Sheets.
+    """
+    sheet = _get_worksheet("Expenses")
+    if not sheet: return
+
+    headers = ["Transaction ID", "User Account ID", "Transaction Date", "Amount (NIS)", "Action Category", "Description / Notes"]
+    
+    # We always write the headers first
+    final_rows = [headers]
+    for r in all_rows:
+        final_rows.append(list(r))
+        
+    sheet.clear()
+    
+    if final_rows:
+        sheet.update(values=final_rows, range_name='A1')
+        
+    logger.info(f"Global sync complete. Wiped sheet and wrote {len(all_rows)} exact local rows.")
 
 @_retry
 def fetch_all_profiles():

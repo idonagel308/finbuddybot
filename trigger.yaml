@@ -1,0 +1,18 @@
+createTime: '2026-02-26T14:52:51.494831263Z'
+description: push to google cloud
+filename: cloudbuild.yaml
+github:
+  name: finbuddybot
+  owner: idonagel308
+  push:
+    branch: ^main$
+id: 70bb3af0-b369-4b48-a636-ad6f5fcfd301
+name: fintech-bot-deploy
+resourceName: projects/finbuddy-etl/locations/global/triggers/70bb3af0-b369-4b48-a636-ad6f5fcfd301
+serviceAccount: projects/finbuddy-etl/serviceAccounts/954012480664-compute@developer.gserviceaccount.com
+substitutions:
+  _ALLOWED_USER_ID: '1983788745'
+  _GOOGLE_SHEET_ID: 1EiL6FblElDBuqYaTTyBMF7n2yZyasm-7rxCASwoB848
+  _TELEGRAM_BOT_TOKEN: 7928645556:AAH6ldHLkErj3J5f_Lb1cV5t5ROGEyYIl1A
+  _GOOGLE_API_KEY: 'AIzaSyDwj2fzA9saRQLXC1cqFEGtaTEyogKrWZM'
+  _WEBAPP_URL: 'https://fintech-bot-rim3nfxejq-uc.a.run.app/webapp'

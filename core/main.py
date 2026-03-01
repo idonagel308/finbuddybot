@@ -65,6 +65,14 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    logger.info("Initiating graceful shutdown...")
+    try:
+        logger.info("Running final sync to Google Sheets to ensure perfect consistency...")
+        # Since this could take a few seconds, Cloud Run gives us 10s of graceful SIGTERM shutdown time
+        db.sync_all_to_sheets() 
+    except Exception as e:
+        logger.error(f"Final sync failed: {e}")
+
     if telegram_app:
         try:
             await telegram_app.stop()
