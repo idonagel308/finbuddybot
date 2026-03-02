@@ -39,6 +39,9 @@ class ExpenseModel(BaseModel):
     amount: float
     category: str
     description: Optional[str] = ""
+    type: str = "expense"
+    status: str = "completed"
+    due_date: Optional[str] = None
 
     @validator('amount')
     def amount_must_be_positive(cls, v):

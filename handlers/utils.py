@@ -5,9 +5,9 @@ from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-import services.database as db
+from database.user_management import get_profile
 import services.llm_helper as llm_helper
-from core.config import logger, MAX_MESSAGES_PER_MINUTE, TELEGRAM_MAX_LENGTH, ALLOWED_USER_ID, CATEGORY_EMOJIS
+from core.config import logger, MAX_MESSAGES_PER_MINUTE, TELEGRAM_MAX_LENGTH, ALLOWED_USERS, CATEGORY_EMOJIS
 
 _user_message_timestamps = defaultdict(list)
 
@@ -39,7 +39,7 @@ _PROFILE_CACHE_TTL = 300  # 5 minutes
 _profile_cache: dict = {}  # {user_id: (profile_dict, timestamp)}
 
 
-def _get_cached_profile(user_id: int) -> dict | None:
+async def _get_cached_profile(user_id: int) -> dict | None:
     """Return a cached profile, or fetch from DB and cache it."""
     now = time.monotonic()
     entry = _profile_cache.get(user_id)
@@ -49,7 +49,7 @@ def _get_cached_profile(user_id: int) -> dict | None:
             return profile
     # Cache miss or expired — fetch from DB
     try:
-        profile = db.get_profile(user_id)
+        profile = await get_profile(user_id)
     except Exception:
         profile = None
     _profile_cache[user_id] = (profile, now)
@@ -109,7 +109,7 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=Non
     Uses the profile cache to avoid a DB read on every call.
     """
     try:
-        profile = _get_cached_profile(chat_id)
+        profile = await _get_cached_profile(chat_id)
         target_lang = profile.get('language', 'English') if profile else 'English'
     except Exception:
         target_lang = 'English'
@@ -153,7 +153,7 @@ async def _safe_send(bot, chat_id, text, parse_mode='Markdown', reply_markup=Non
 async def _safe_edit(query, chat_id, text, parse_mode='Markdown', reply_markup=None):
     """Dynamically translates and edits a message. Uses the profile cache."""
     try:
-        profile = _get_cached_profile(chat_id)
+        profile = await _get_cached_profile(chat_id)
         target_lang = profile.get('language', 'English') if profile else 'English'
     except Exception:
         target_lang = 'English'
@@ -202,8 +202,8 @@ def _private_only(func):
         if chat.type != 'private':
             return
         
-        # User ID validation (Single-Tenant Security)
-        if ALLOWED_USER_ID and user.id != ALLOWED_USER_ID:
+        # User ID validation (Whitelist Security)
+        if ALLOWED_USERS and user.id not in ALLOWED_USERS:
             logger.warning(f"Unauthorized access attempt by user {user.id}")
             await _safe_send(
                 context.bot, 

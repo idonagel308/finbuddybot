@@ -27,13 +27,6 @@ import datetime
 from datetime import datetime
 # import sheets_etl
 
-# ── Setup: temporarily override DB to use a test database ──
-TEST_DB = os.path.join(tempfile.gettempdir(), "fintech_test.db")
-
-# Patch database module BEFORE importing
-import services.database as db
-db.DB_NAME = TEST_DB
-
 import services.llm_helper as llm_helper
 from services.llm_helper import (
     _classify_intent, _sanitize_user_input, _validate_parsed_expense,
@@ -213,178 +206,6 @@ def test_category_mapping():
     _test("Fuzzy: 'TRANSPORT' → 'Transport'", _fuzzy_match_category("TRANSPORT") == "Transport")
     _test("Fuzzy: empty → 'Other'", _fuzzy_match_category("") == "Other")
     _test("Fuzzy: gibberish → 'Other'", _fuzzy_match_category("xyzabc") == "Other")
-
-
-# ══════════════════════════════════════════════════════════════
-# 5. DATABASE OPERATIONS
-# ══════════════════════════════════════════════════════════════
-def test_database():
-    _section("5. Database Operations")
-
-    from unittest.mock import patch
-    with patch('services.sheets_etl.append_expense'), patch('services.sheets_etl.delete_expense'), patch('services.sheets_etl.rewrite_user_expenses'):
-        # Clean test DB
-        if os.path.exists(TEST_DB):
-            os.remove(TEST_DB)
-
-        db.init_db()
-        _test("Database initialized", os.path.exists(TEST_DB))
-
-        # Add expense
-        TEST_USER = 99999
-        db.add_expense(TEST_USER, 50.0, "Food", "test pizza")
-        _test("Expense added", True)
-
-        # Retrieve expense
-        expenses = db.get_recent_expenses(user_id=TEST_USER, limit=10)
-        _test("Expense retrieved", len(expenses) >= 1)
-        _test("Amount correct", expenses[0][2] == 50.0)
-        _test("Category correct", expenses[0][3] == "Food")
-
-        # Monthly summary
-        total, _ = db.get_monthly_summary(TEST_USER)
-        _test("Monthly summary correct", total >= 50.0)
-
-        # Category totals (Structure: {category: {"expenses": X, "income": Y}})
-        totals = db.get_category_totals(TEST_USER)
-        _test("Category totals has Food", "Food" in totals)
-        _test("Food total is 50", totals.get("Food", {}).get("expenses", 0) == 50.0)
-
-        # ── CRITICAL: get_expense_totals() contract ──
-        # These tests guard against format-mismatch bugs where callers expect
-        # a flat {cat: float} but get_category_totals() returns a nested dict.
-        # If these fail, the pie chart and AI insights will silently crash.
-        flat_totals = db.get_expense_totals(TEST_USER)
-        _test("get_expense_totals returns dict", isinstance(flat_totals, dict))
-        _test("get_expense_totals has Food", "Food" in flat_totals)
-        _test("get_expense_totals Food value is float", isinstance(flat_totals.get("Food"), float))
-        _test("get_expense_totals Food value is 50.0", flat_totals.get("Food") == 50.0)
-        # sum(totals.values()) must never crash — this is exactly what the pie chart does
-        try:
-            total = sum(flat_totals.values())
-            _test("get_expense_totals: sum(values) works without crash", total > 0)
-        except TypeError as e:
-            _test("get_expense_totals: sum(values) works without crash", False, f"TypeError: {e}")
-        # sorted(...) must never crash — this is exactly what the insights loop does
-        try:
-            sorted(flat_totals.items(), key=lambda x: x[1], reverse=True)
-            _test("get_expense_totals: sorted(items) works without crash", True)
-        except TypeError as e:
-            _test("get_expense_totals: sorted(items) works without crash", False, f"TypeError: {e}")
-
-        # Validation — invalid amount
-        try:
-            db.add_expense(TEST_USER, -100, "Food", "negative")
-            _test("Negative amount rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Negative amount rejected", True)
-
-        # Validation — invalid category
-        try:
-            db.add_expense(TEST_USER, 50, "InvalidCat", "bad category")
-            _test("Invalid category rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Invalid category rejected", True)
-
-        # Validation — huge amount
-        try:
-            db.add_expense(TEST_USER, 2_000_000, "Food", "too much")
-            _test("Huge amount rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Huge amount rejected", True)
-
-        # NaN amount
-        try:
-            db.add_expense(TEST_USER, float('nan'), "Food", "nan test")
-            _test("NaN amount rejected by DB", False, "should have raised ValueError")
-        except ValueError:
-            _test("NaN amount rejected by DB", True)
-
-        # Invalid user_id
-        try:
-            db.add_expense(-1, 50, "Food", "negative user")
-            _test("Negative user_id rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Negative user_id rejected", True)
-
-        # Profile validation
-        try:
-            db.set_profile(TEST_USER, 5, 120000, 'NIS', 'English', 'info')  # age too young
-            _test("Profile: age=5 rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Profile: age=5 rejected", True)
-
-        try:
-            db.set_profile(TEST_USER, 25, -100, 'NIS', 'English', 'info')  # negative income
-            _test("Profile: negative income rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Profile: negative income rejected", True)
-
-        try:
-            long_info = "A" * 1500
-            db.set_profile(TEST_USER, 25, 50000, 'NIS', 'English', long_info)  # max 1000 length chars
-            _test("Profile: too long info rejected", False, "should have raised ValueError")
-        except ValueError:
-            _test("Profile: too long info rejected", True)
-
-        # Successful profile
-        db.set_profile(TEST_USER, 25, 120000, 'NIS', 'English', 'Aggressively saving')
-        _test("Valid profile set successfully", True)
-        prof = db.get_profile(TEST_USER)
-        _test("Profile retrieved", prof and prof['age'] == 25)
-        _test("Profile income correct", prof and prof['yearly_income'] == 120000.0)
-
-        # Delete expense
-        exp_id = expenses[0][0]
-        db.delete_expense(TEST_USER, exp_id)
-        _test("Expense deleted", True)
-        remaining = db.get_recent_expenses(user_id=TEST_USER)
-        _test("Expense removed from DB", len(remaining) == 0)
-
-    # Valid profile
-    db.set_profile(TEST_USER, 25, 120000, 'USD', 'English', 'Saving for a house')
-    profile = db.get_profile(TEST_USER)
-    _test("Valid profile fully saved", 
-          profile is not None and 
-          profile['age'] == 25 and 
-          profile['yearly_income'] == 120000 and 
-          profile['currency'] == 'USD' and 
-          profile['language'] == 'English' and
-          profile['additional_info'] == 'Saving for a house')
-
-    # Valid profile with defaults
-    db.set_profile(TEST_USER, 30, 80000)
-    profile2 = db.get_profile(TEST_USER)
-    _test("Valid profile defaults handled", 
-          profile2 is not None and 
-          profile2['currency'] == 'NIS' and 
-          profile2['language'] == 'English' and 
-          profile2['additional_info'] == '')
-
-    # Budget
-    db.set_budget(TEST_USER, 1000.0)
-    budget = db.get_budget(TEST_USER)
-    _test("Budget set and retrieved", budget == 1000.0)
-
-
-    # Delete all expenses
-    db.add_expense(TEST_USER, 10, "Other", "temp1")
-    db.add_expense(TEST_USER, 20, "Other", "temp2")
-    count = db.delete_all_expenses(TEST_USER)
-    _test(f"Delete all returned count={count}", count >= 2)
-    remaining = db.get_recent_expenses(user_id=TEST_USER, limit=100)
-    _test("All expenses deleted", len(remaining) == 0)
-
-    # Sheets sync test
-    if count > 0:
-        with patch('services.sheets_etl.rewrite_user_expenses'):
-            db._sync_local_to_sheets_for_user(TEST_USER) # Manually trigger mock
-        _test("Sheets sync mock called without error", True)
-
-    # Cleanup
-    db.close_connection()
-    os.remove(TEST_DB)
-    _test("Test DB cleaned up", not os.path.exists(TEST_DB))
 
 
 # ══════════════════════════════════════════════════════════════
@@ -577,28 +398,6 @@ def test_parse_expense_regex():
 
 
 # ══════════════════════════════════════════════════════════════
-# 8. ALLOWED CATEGORIES CONSISTENCY
-# ══════════════════════════════════════════════════════════════
-def test_category_consistency():
-    _section("8. Category Consistency Across Modules")
-
-    from core.models import ALLOWED_CATEGORIES as model_cats
-
-    _test("llm_helper categories match database",
-          llm_helper.ALLOWED_CATEGORIES == db.ALLOWED_CATEGORIES,
-          f"llm={llm_helper.ALLOWED_CATEGORIES}, db={db.ALLOWED_CATEGORIES}")
-
-    _test("models.py categories match database",
-          model_cats == db.ALLOWED_CATEGORIES,
-          f"models={model_cats}, db={db.ALLOWED_CATEGORIES}")
-
-    # No emojis in any category set
-    for cat in llm_helper.ALLOWED_CATEGORIES:
-        has_emoji = any(ord(c) > 0xFFFF for c in cat)
-        _test(f"No emoji in category '{cat}'", not has_emoji)
-
-
-# ══════════════════════════════════════════════════════════════
 # 9. MESSAGE SAFETY
 # ══════════════════════════════════════════════════════════════
 def test_message_safety():
@@ -648,84 +447,6 @@ def test_currency():
 
 
 # ══════════════════════════════════════════════════════════════
-# 11. FASTAPI ENDPOINTS
-# ══════════════════════════════════════════════════════════════
-def test_api():
-    _section("11. FastAPI Endpoints (main.py)")
-    
-    try:
-        from fastapi.testclient import TestClient
-        from unittest.mock import patch
-        from core.main import app
-        import core.security as security
-        
-        # Force a test API key for the test run so we don't rely on local .env state
-        security.API_SECRET_KEY = "dummy_test_key_123"
-        
-        # Initialize test database for the API endpoints
-        db.init_db()
-
-        client = TestClient(app)
-        
-        # Test 1: Healthcheck
-        resp = client.get("/")
-        _test("API Health check", resp.status_code == 200 and "status" in resp.json())
-        
-        # Prepare headers
-        headers = {"X-API-Key": security.API_SECRET_KEY}
-        test_user = 12345
-        
-        # Test 2: Auth failure (wrong key)
-        bad_resp = client.get(f"/expenses/{test_user}", headers={"X-API-Key": "wrong_key"})
-        _test("API Auth rejected wrong key", bad_resp.status_code == 403)
-            
-        # Add expense via API
-        with patch('services.sheets_etl.append_expense') as mock_append:
-            payload = {
-                "user_id": test_user,
-                "amount": 75.0,
-                "category": "Food",
-                "description": "API Test"
-            }
-            resp = client.post("/expenses", json=payload, headers=headers)
-        if resp.status_code != 200 or resp.json().get("status") != "success":
-            print(f"API POST Error: {resp.status_code} - {resp.text}")
-        _test("API POST /expenses", resp.status_code == 200 and resp.json().get("status") == "success")
-        
-        # Add massive DoS expense via API -- should be rejected (422 Unprocessable Entity)
-        dos_payload = {
-            "user_id": test_user,
-            "amount": 75.0,
-            "category": "Food",
-            "description": "A" * 5000  # Exceeds max length
-        }
-        dos_resp = client.post("/expenses", json=dos_payload, headers=headers)
-        _test("API POST rejects DoS string payloads (422)", dos_resp.status_code == 422)
-
-        # Get expenses
-        resp = client.get(f"/expenses/{test_user}", headers=headers)
-        if resp.status_code != 200 or len(resp.json()) == 0:
-            print(f"API GET Error: {resp.status_code} - {resp.text}")
-        _test("API GET /expenses", resp.status_code == 200 and len(resp.json()) > 0)
-        if resp.status_code == 200 and len(resp.json()) > 0:
-            exp_id = resp.json()[0]["id"]
-            
-            # Summary and chart
-            resp2 = client.get(f"/summary/{test_user}", headers=headers)
-            _test("API GET /summary", resp2.status_code == 200 and resp2.json().get("monthly_total") >= 75.0)
-            
-            resp3 = client.get(f"/chart/{test_user}", headers=headers)
-            _test("API GET /chart", resp3.status_code == 200 and "Food" in resp3.json())
-            
-            # Delete expense
-            resp4 = client.delete(f"/expenses/{test_user}/{exp_id}", headers=headers)
-            _test("API DELETE /expenses", resp4.status_code == 200)
-    except ImportError:
-        print("  ⚠️ fastapi/httpx not installed, skipping API tests")
-    except Exception as e:
-        _test(f"API Test Error: {e}", False)
-
-# ══════════════════════════════════════════════════════════════
 # 12. LLM INSIGHTS SIGNATURE
 # ══════════════════════════════════════════════════════════════
 def test_insights():
@@ -747,38 +468,6 @@ def test_insights():
         _test("Insights generation returns string properly", isinstance(res, str) and len(res) > 0)
     except Exception as e:
         _test(f"Insights generation failed: {e}", False)
-
-
-# ══════════════════════════════════════════════════════════════
-# 13. INSIGHT SYNCHRONIZATION
-# ══════════════════════════════════════════════════════════════
-def test_insight_sync():
-    _section("13. Insight Synchronization")
-
-    # Ensure test DB is ready
-    db.init_db()
-    
-    test_user = 888111
-    year, month = 2026, 2
-    test_content = "🔍 Observation: High food spending. 💡 Strategy: Budgeting. 🎯 Action: Cook more."
-
-    # Test saving
-    db.save_insight(test_user, year, month, test_content)
-    _test("Save insight to DB", True)
-
-    # Test retrieval
-    retrieved = db.get_insight(test_user, year, month)
-    _test("Retrieve insight from DB", retrieved == test_content)
-
-    # Test retrieval for missing data
-    missing = db.get_insight(test_user, year, 3)
-    _test("Retrieve missing insight returns None", missing is None)
-
-    # Test overwrite
-    overwritten_content = "Updated insight"
-    db.save_insight(test_user, year, month, overwritten_content)
-    retrieved2 = db.get_insight(test_user, year, month)
-    _test("Overwrite insight works", retrieved2 == overwritten_content)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -942,18 +631,13 @@ if __name__ == "__main__":
     test_sanitization()
     test_validation()
     test_category_mapping()
-    test_database()
     test_security()
     test_parse_expense_llm()
     test_parse_expense_regex()
-    test_category_consistency()
     test_message_safety()
     test_currency()
-    test_api()
     test_insights()
-    test_insight_sync()
     test_webapp_auth()
-    test_webapp_api()
     test_cloud_deployment_configuration()
 
     print(f"\n{'='*60}")

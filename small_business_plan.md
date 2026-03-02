@@ -5,6 +5,7 @@ Users should choose their focus early to get the right interface.
 
 - **Initial Setup:** During the `/start` or onboarding flow, present two buttons: `💼 Small Business` and `👤 Personal`.
 - **Profile Storage:** Update the profile schema (in `firestore_service.py` and `database.py`) to include `account_type`.
+- **Settings Toggle:** Allow users to change their choice later through the bot's `⚙️ Settings` menu (e.g., clicking "Switch to Business Mode").
 - **Conditional Interface:**
     - **Personal:** Classic simplified dashboard, only past-tense logging.
     - **Small Business:** Enables "Future Tracking", "Cash Flow Forecasting", and "Business Analytics" on the web dashboard.

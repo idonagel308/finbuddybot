@@ -6,12 +6,11 @@ from telegram.ext import (
 )
 
 from core.config import logger
-import services.database as db
 from handlers.utils import _safe_send
 
 from handlers.commands import (
     start, help_command, menu_command, dashboard_command,
-    undo_command, budget_command, export_command, deleteall_command
+    undo_command, budget_command, export_command, deleteall_command, restart_command
 )
 from handlers.settings_ui import settings_command
 from handlers.callbacks import button_handler
@@ -38,6 +37,7 @@ def get_application():
     application.add_error_handler(error_handler)
 
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('restart', restart_command))
     application.add_handler(CommandHandler('help', help_command))
     application.add_handler(CommandHandler('menu', menu_command))
     application.add_handler(CommandHandler('dashboard', dashboard_command))
@@ -67,7 +67,6 @@ def get_application():
 
 if __name__ == '__main__':
     # Standard Polling startup (for local development)
-    db.init_db()
     app = get_application()
     if app:
         logger.info("Bot is starting (Polling)...")

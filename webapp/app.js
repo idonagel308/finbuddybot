@@ -60,6 +60,15 @@ function updateBudgetUI() {
     fill.style.width = `${Math.min(100, budgetPct)}%`;
     if (budgetPct > 85) fill.classList.add('warning');
     else fill.classList.remove('warning');
+
+    const bizMetrics = document.getElementById('business-metrics');
+    if (currentPeriodData.budget.is_business) {
+        bizMetrics.style.display = 'block';
+        document.getElementById('runway-days').textContent = `${currentPeriodData.budget.runway_days || 0} Days`;
+        document.getElementById('pending-payables').textContent = `₪${(currentPeriodData.budget.pending_payables || 0).toLocaleString()}`;
+    } else {
+        bizMetrics.style.display = 'none';
+    }
 }
 
 function updateHeaderUI() {
@@ -227,40 +236,73 @@ const renderPulseChart = () => {
     gradExp.addColorStop(0, `rgba(${isMono ? '71,85,105' : '244,63,94'}, 0.4)`);
     gradExp.addColorStop(1, `rgba(${isMono ? '71,85,105' : '244,63,94'}, 0.0)`);
 
+    const datasets = [
+        {
+            label: 'Historical Income',
+            data: currentPeriodData.cashFlowSeries.income,
+            borderColor: incColor,
+            backgroundColor: gradInc,
+            borderWidth: 3,
+            tension: 0.4,
+            fill: true,
+            pointBackgroundColor: incColor,
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 6
+        },
+        {
+            label: 'Historical Expenses',
+            data: currentPeriodData.cashFlowSeries.expenses,
+            borderColor: expColor,
+            backgroundColor: gradExp,
+            borderWidth: 3,
+            tension: 0.4,
+            fill: true,
+            pointBackgroundColor: expColor,
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 6
+        }
+    ];
+
+    if (currentPeriodData.budget.is_business && currentPeriodData.cashFlowSeries.projected_income) {
+        datasets.push({
+            label: 'Projected Income',
+            data: currentPeriodData.cashFlowSeries.projected_income,
+            borderColor: incColor,
+            borderDash: [5, 5],
+            borderWidth: 3,
+            tension: 0.4,
+            fill: false,
+            pointBackgroundColor: incColor,
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 6
+        });
+        datasets.push({
+            label: 'Projected Expenses',
+            data: currentPeriodData.cashFlowSeries.projected_expenses,
+            borderColor: expColor,
+            borderDash: [5, 5],
+            borderWidth: 3,
+            tension: 0.4,
+            fill: false,
+            pointBackgroundColor: expColor,
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 6
+        });
+    }
+
     pulseChartInstance = new Chart(ctxPulse, {
         type: 'line',
         data: {
             labels: currentPeriodData.cashFlowSeries.labels,
-            datasets: [
-                {
-                    label: 'Income',
-                    data: currentPeriodData.cashFlowSeries.income,
-                    borderColor: '#10b981', // Emerald
-                    backgroundColor: gradInc,
-                    borderWidth: 3,
-                    tension: 0.4, // Smooth curve
-                    fill: true,
-                    pointBackgroundColor: '#10b981',
-                    pointBorderColor: '#fff',
-                    pointBorderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 6
-                },
-                {
-                    label: 'Expenses',
-                    data: currentPeriodData.cashFlowSeries.expenses,
-                    borderColor: '#f43f5e', // Rose
-                    backgroundColor: gradExp,
-                    borderWidth: 3,
-                    tension: 0.4,
-                    fill: true,
-                    pointBackgroundColor: '#f43f5e',
-                    pointBorderColor: '#fff',
-                    pointBorderWidth: 2,
-                    pointRadius: 0,
-                    pointHoverRadius: 6
-                }
-            ]
+            datasets: datasets
         },
         options: {
             responsive: true,

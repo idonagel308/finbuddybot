@@ -10,27 +10,29 @@ Run:  python main.py
 import os
 import time
 import logging
-
 from dotenv import load_dotenv
+load_dotenv()
+
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from contextlib import asynccontextmanager
 from telegram import Update
 import asyncio
 
-import services.database as db
-import services.firestore_service as firestore_service
+from services.scheduler import payment_reminder_job
+
+from database.expense_operations import add_expense, delete_expense
+from database.user_management import get_user_settings, get_budget
+from database.queries import get_monthly_summary, get_recent_expenses, get_monthly_expenses
+from database.analytics_engine import get_daily_aggregation, get_cash_flow_forecast, get_expense_totals, get_insight
 from .bot_setup import get_application
 from .models import ExpenseModel, ExpenseResponse
 from .security import verify_api_key, rate_limit_check, verify_telegram_webapp
-
-load_dotenv()
-
 # ── Logging & Uptime ──
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,25 +43,39 @@ telegram_app = None  # initialized in background task after yield
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize DB synchronously (fast, local), then yield immediately
-    # so Cloud Run healthchecks pass. The Telegram bot inits in the background.
-    global telegram_app
-    try:
-        db.init_db()
-    except Exception as e:
-        logger.error(f"DB init/sync failed: {e}")
+    # Startup: Ensure the Telegram bot starts in the background
+    # (The Firestore client initializes itself implicitly, so no db.init_db is needed)
 
     async def _start_bot():
         global telegram_app
         try:
             telegram_app = get_application()
+            if not telegram_app:
+                return
+
             await telegram_app.initialize()
             await telegram_app.start()
-            logger.info("Telegram bot started successfully.")
+
+            webhook_url = os.getenv("WEBHOOK_URL")
+            bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+            
+            if webhook_url:
+                # Cloud Mode: Set webhook
+                url = f"{webhook_url.rstrip('/')}/webhook/{bot_token}"
+                await telegram_app.bot.set_webhook(url=url)
+                logger.info(f"Bot configured for Webhook: {url}")
+            else:
+                # Local Mode: Start polling in background
+                await telegram_app.updater.start_polling(drop_pending_updates=True)
+                logger.info("Bot configured for Polling (Local Mode).")
+            
+            # Start proactive payment reminder job
+            asyncio.create_task(payment_reminder_job())
+            logger.info("Bot and scheduler successfully started.")
         except Exception as e:
             logger.error(f"Bot startup failed: {e}")
 
-    # Yield immediately so the web server binds port 8080, then start bot in background
+    # Start bot in background task
     asyncio.create_task(_start_bot())
     yield
 
@@ -123,7 +139,7 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["X-API-Key", "Content-Type"],
+    allow_headers=["X-API-Key", "Content-Type", "Authorization"],
 )
 
 
@@ -174,7 +190,7 @@ async def get_expenses(user_id: int, limit: int = 20):
     _validate_user_id(user_id)
     limit = min(max(1, limit), 50)
 
-    rows = db.get_recent_expenses(user_id=user_id, limit=limit)
+    rows = await get_recent_expenses(user_id=user_id, limit=limit)
 
     expenses = []
     for row in rows:
@@ -191,10 +207,13 @@ async def get_expenses(user_id: int, limit: int = 20):
 
 # --- Pydantic Schema overriding models.py for Strict Validation ---
 class InboundExpenseModel(BaseModel):
-    user_id: int = Field(gt=0, lt=10**15)
-    amount: float = Field(gt=0, le=db.MAX_AMOUNT)
+    user_id: int
+    amount: float
     category: str = Field(min_length=1, max_length=50)
-    description: str = Field(default="", max_length=db.MAX_DESCRIPTION_LENGTH)
+    description: str = Field(default="", max_length=500)
+    type: str = "expense"
+    status: str = "completed"
+    due_date: Optional[str] = None
 
 @app.post(
     "/expenses",
@@ -203,9 +222,10 @@ class InboundExpenseModel(BaseModel):
 async def add_expense(expense: InboundExpenseModel, background_tasks: BackgroundTasks):
     """Add a new expense."""
     try:
-        await firestore_service.add_expense(
+        await add_expense(
             expense.user_id, expense.amount,
-            expense.category, expense.description
+            expense.category, expense.description,
+            expense.type, expense.status, expense.due_date
         )
         
         return {"status": "success", "message": "Expense added"}
@@ -223,7 +243,7 @@ async def add_expense(expense: InboundExpenseModel, background_tasks: Background
 async def delete_expense(user_id: int, expense_id: int):
     """Delete a specific expense (owner-only)."""
     _validate_user_id(user_id)
-    success = db.delete_expense(user_id, expense_id)
+    success = await delete_expense(user_id, str(expense_id))
     if success:
         return {"status": "success", "message": "Expense deleted"}
     raise HTTPException(status_code=404, detail="Expense not found or not owned by user")
@@ -236,7 +256,7 @@ async def delete_expense(user_id: int, expense_id: int):
 async def get_summary(user_id: int):
     """Get total spent this month."""
     _validate_user_id(user_id)
-    total, _ = await firestore_service.get_monthly_summary(user_id)
+    total, _ = await get_monthly_summary(user_id)
     return {"user_id": user_id, "monthly_total": total}
 
 
@@ -252,7 +272,7 @@ async def get_chart_data(user_id: int):
     response format is stable even if the internal DB schema changes.
     """
     _validate_user_id(user_id)
-    totals = db.get_expense_totals(user_id)
+    totals = await get_expense_totals(user_id)
     return totals
 
 
@@ -265,11 +285,11 @@ async def webapp_dashboard(
 ):
     """Serve real data for the Telegram Web App dashboard."""
     _validate_user_id(user_id)
-    profile = await firestore_service.get_profile(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
+    profile = await get_user_settings(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
     
     # 1. Budget and Monthly Spend
-    total_spent, total_income = await firestore_service.get_monthly_summary(user_id, year=year, month=month)
-    monthly_budget = await firestore_service.get_budget(user_id) or 0
+    total_spent, total_income = await get_monthly_summary(user_id, year=year, month=month)
+    monthly_budget = await get_budget(user_id) or 0
     net_flow = total_income - total_spent
     
     # Calculate savings (simplistic tracking for now: income - spent. Real implementation would track specific 'transfer' txs)
@@ -282,21 +302,44 @@ async def webapp_dashboard(
     }
 
     # 1.5 Generate Real CashFlow Series for the line chart
-    cashFlowSeries = await firestore_service.get_daily_aggregation(user_id, year=year, month=month)
+    if profile.get("account_type") == "business":
+        rawSeries = await get_cash_flow_forecast(user_id)
+        
+        pending_payables = sum(abs(day["projected_net"]) for day in rawSeries if day["projected_net"] < 0)
+        budget_data["pending_payables"] = pending_payables
+        budget_data["runway_days"] = 30
+        budget_data["is_business"] = True
+        
+        cashFlowSeries = {
+            "labels": [d["date"][5:] for d in rawSeries], # e.g. "03-02",
+            "income": [d["historical_net"] if d["historical_net"] > 0 else 0 for d in rawSeries],
+            "expenses": [abs(d["historical_net"]) if d["historical_net"] < 0 else 0 for d in rawSeries],
+            "projected_income": [d["projected_net"] if d["is_future"] and d["projected_net"] > 0 else 0 for d in rawSeries],
+            "projected_expenses": [abs(d["projected_net"]) if d["is_future"] and d["projected_net"] < 0 else 0 for d in rawSeries]
+        }
+    else:
+        rawSeries = await get_daily_aggregation(user_id, year=year, month=month)
+        budget_data["is_business"] = False
+        
+        cashFlowSeries = {
+            "labels": [d["date"][5:] for d in rawSeries],
+            "income": [0 for _ in rawSeries], # Placeholder
+            "expenses": [d["spent"] for d in rawSeries]
+        }
 
     # 2. Recent Transactions (Formatted for the JS list widget)
     # If a specific month is selected, we should fetch that month's expenses.
-    if month is not None or year is not None:
-        rows = await firestore_service.get_monthly_expenses(user_id, year=year, month=month)
+    if year and month:
+        rows = await get_monthly_expenses(user_id, year=year, month=month)
         rows = rows[:10]
     else:
-        rows = await firestore_service.get_recent_expenses(user_id, limit=6)
+        rows = await get_recent_expenses(user_id, limit=6)
         
     recent = []
     for r in rows:
         amount = r[2]
         cat = r[3]
-        tx_type = 'inc' if cat in db.ALLOWED_CATEGORIES.intersection({'Salary', 'Investment', 'Gift'}) or r[5] == 'income' else 'exp'
+        tx_type = 'inc' if cat in {'Salary', 'Investment', 'Gift'} or r[5] == 'income' else 'exp'
         
         # Determine emoji icon based on simple mapping
         icon = '🚗' if cat == 'Transport' else '🍔' if cat == 'Food' else '💼' if tx_type == 'inc' else '💸'
@@ -322,7 +365,7 @@ async def webapp_dashboard(
     # Use the requested year/month or the current one
     y = year or datetime.now().year
     m = month or datetime.now().month
-    insight = db.get_insight(user_id, y, m)
+    insight = await get_insight(user_id, y, m)
 
     if not insight:
         insight = f"""
@@ -347,7 +390,7 @@ async def webapp_categories(
 ):
     """Serve category breakdown for the donut chart."""
     _validate_user_id(user_id)
-    totals = db.get_expense_totals(user_id, year=year, month=month)
+    totals = await get_expense_totals(user_id, year=year, month=month)
     
     # Filter out income categories for the expense breakdown donut
     expense_totals = {k: v for k, v in totals.items() if k not in {'Salary', 'Investment', 'Gift'}}
@@ -364,10 +407,10 @@ class UserSettings(BaseModel):
     accent_color: str = None
 
 @app.get("/api/webapp/settings")
-    async def get_webapp_settings(user_id: int = Depends(verify_telegram_webapp)):
-        """Fetch user-specific dashboard preferences."""
-        settings = await firestore_service.get_user_settings(user_id)
-        return settings
+async def get_webapp_settings(user_id: int = Depends(verify_telegram_webapp)):
+    """Fetch user-specific dashboard preferences."""
+    settings = await get_user_settings(user_id)
+    return settings
 
 @app.post("/api/webapp/settings")
 async def save_webapp_settings(
@@ -375,8 +418,8 @@ async def save_webapp_settings(
     user_id: int = Depends(verify_telegram_webapp)
 ):
     """Save user-specific dashboard preferences."""
-    await firestore_service.save_user_settings(
-        user_id,
+    await save_user_settings(
+        user_id=user_id,
         theme=settings.theme,
         layout=settings.layout,
         budget_target=settings.budget_target,
@@ -399,7 +442,7 @@ async def webapp_transaction(
     """Log a transaction from Web App."""
     _validate_user_id(user_id)
     try:
-        await firestore_service.add_expense(user_id, tx.amount, tx.category, tx.description)
+        await add_expense(user_id, tx.amount, tx.category, tx.description)
         return {"status": "success"}
     except Exception as e:
         logger.error(f"Webapp tx error: {e}")

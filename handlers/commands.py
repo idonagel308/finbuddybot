@@ -3,66 +3,57 @@ import io
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ContextTypes
 
-import services.database as db
-import services.firestore_service as firestore_service
-from handlers.utils import _safe_send, _private_only
+from database.expense_operations import get_last_expense_id, delete_expense
+from database.user_management import set_budget, get_budget
+from database.analytics_engine import export_expenses_csv
+from database.queries import get_monthly_summary
+from handlers.utils import _safe_send, _private_only, _get_cached_profile
+from handlers.onboarding import start_onboarding
 
 
-def _get_main_menu_keyboard() -> InlineKeyboardMarkup:
+def _get_main_menu_keyboard(is_business: bool = False) -> InlineKeyboardMarkup:
     """Returns the primary dashboard inline keyboard."""
     
-    # URL of your mounted FastAPI static webapp (can be configurable via .env in production)
-    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+    # URL of your mounted FastAPI static webapp
+    webapp_url = os.getenv("WEBAPP_URL", "http://localhost:8000/webapp")
     
     keyboard = [
         [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
         [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
         [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
-        [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')],
     ]
+
+    # Business-specific features
+    if is_business:
+        keyboard.append([InlineKeyboardButton("📅 Pending & Forecast", callback_data='pending_list')])
+
+    keyboard.append([InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')])
+    
     return InlineKeyboardMarkup(keyboard)
 
 
 @_private_only
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
-    # Persistent custom keyboard at the bottom of the screen
-    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
-    from telegram import ReplyKeyboardMarkup, KeyboardButton
-    reply_keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton(text="🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))]],
-        resize_keyboard=True,
-        persistent=True
-    )
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="A persistent Web Dashboard button has been added to your screen below! 👇",
-        reply_markup=reply_keyboard
-    )
+    await start_onboarding(update, context, is_restart=False)
 
-    await _safe_send(context.bot, update.effective_chat.id, 
-        "🏦 *Welcome to FinTechBot Premium.*\n\n"
-        "I am your Personal Wealth Manager and Financial Intelligence Engine.\n\n"
-        "📝 *To log a transaction, simply text me naturally:*\n"
-        "  • _\"Spent ₪150 on an Uber\"_\n"
-        "  • _\"100 for groceries\"_\n\n"
-        "🌐 *Language & Settings:*\n"
-        "You can choose my response language by tapping ⚙️ Settings below to set up your profile.\n\n"
-        "📊 *Your Analytics Dashboard:*",
-        reply_markup=_get_main_menu_keyboard(),
-        parse_mode='Markdown'
-    )
+@_private_only
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restarts the onboarding flow."""
+    await start_onboarding(update, context, is_restart=True)
 
 
 @_private_only
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /help command."""
+    profile = await _get_cached_profile(update.effective_user.id)
+    is_business = (profile.get('account_type') == 'business') if profile else False
+    
     await _safe_send(context.bot, update.effective_chat.id, 
         "🤖 *FinTechBot Protocol:*\n\n"
         "To log an expense, simply type it out. E.g., _\"Flight to London 450 EUR\"_.\n\n"
         "You can manage your analytics and settings using the Main Dashboard below:",
-        reply_markup=_get_main_menu_keyboard(),
+        reply_markup=_get_main_menu_keyboard(is_business=is_business),
         parse_mode='Markdown'
     )
 
@@ -72,7 +63,9 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Sends the interactive menu."""
     if not update.message:
         return
-    await _safe_send(context.bot, update.effective_chat.id, '📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(), parse_mode='Markdown')
+    profile = await _get_cached_profile(update.effective_user.id)
+    is_business = (profile.get('account_type') == 'business') if profile else False
+    await _safe_send(context.bot, update.effective_chat.id, '📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(is_business=is_business), parse_mode='Markdown')
 
 
 @_private_only
@@ -81,7 +74,7 @@ async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     
-    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+    webapp_url = os.getenv("WEBAPP_URL", "http://localhost:8000/webapp")
     keyboard = [[InlineKeyboardButton("Open Dashboard", web_app=WebAppInfo(url=webapp_url))]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -99,13 +92,13 @@ async def undo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Deletes the most recent expense."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    last_id = db.get_last_expense_id(user_id)
+    last_id = await get_last_expense_id(user_id)
 
     if not last_id:
         await _safe_send(context.bot, chat_id, "📭 No expenses to undo.")
         return
 
-    success = db.delete_expense(user_id, last_id)
+    success = await delete_expense(user_id, last_id)
     if success:
         await _safe_send(context.bot, chat_id, "↩️ *Last expense removed!*")
     else:
@@ -125,16 +118,16 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if amount <= 0 or amount > 1_000_000:
                 await _safe_send(context.bot, chat_id, "⚠️ Budget must be between 1 and 1,000,000.")
                 return
-            await firestore_service.set_budget(user_id, amount)
+            await set_budget(user_id, amount)
             await _safe_send(context.bot, chat_id, f"💰 *Monthly budget set to {amount:.0f}!*")
         except ValueError as e:
             await _safe_send(context.bot, chat_id, f"⚠️ {str(e)}")
         except IndexError:
             await _safe_send(context.bot, chat_id, "⚠️ Usage: /budget `5000`")
     else:
-        budget = await firestore_service.get_budget(user_id)
+        budget = await get_budget(user_id)
         if budget:
-            total, _ = await firestore_service.get_monthly_summary(user_id)
+            total, _ = await get_monthly_summary(user_id)
             remaining = budget - total
             status = "✅" if remaining > 0 else "🚨"
             await _safe_send(
@@ -151,8 +144,8 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
-    csv_data = db.export_expenses_csv(user_id)
-    if not csv_data or csv_data.strip() == 'Date,Amount,Category,Description':
+    csv_data = await export_expenses_csv(user_id)
+    if not csv_data or csv_data.strip() == 'Date,Amount,Category,Description,Type':
         await context.bot.send_message(chat_id=chat_id, text="📭 No expenses to export.")
         return
 

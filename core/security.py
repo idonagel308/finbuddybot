@@ -169,14 +169,24 @@ async def verify_telegram_webapp(request: Request):
 
     # Dev-mode bypass for direct browser access (no creds provided)
     if not init_data:
+        from core.config import ALLOWED_USERS
+        allow_bypass = os.getenv("ENV") == "dev"
         dev_user_id = os.getenv("ALLOWED_USER_ID")
-        if dev_user_id:
+        if allow_bypass and dev_user_id:
             try:
-                return int(dev_user_id)
+                uid = int(dev_user_id)
+                if uid in ALLOWED_USERS:
+                    return uid
             except ValueError:
                 pass
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-    return validate_init_data(init_data)
+    user_id = validate_init_data(init_data)
+    from core.config import ALLOWED_USERS
+    if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+        logger.warning(f"WebApp access denied for user {user_id} (not in whitelist)")
+        raise HTTPException(status_code=403, detail="Unauthorized user")
+    
+    return user_id
 
 

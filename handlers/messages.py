@@ -2,14 +2,16 @@ import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
-import services.database as db
-import services.firestore_service as firestore_service
+from database.expense_operations import add_expense
+from database.user_management import get_profile, get_budget
+from database.queries import get_monthly_summary
 import services.llm_helper as llm_helper
 from handlers.utils import (
     _display_category, _escape_markdown, _safe_send,
     _get_category_keyboard, _is_rate_limited, _cleanup_rate_limit_data, _private_only
 )
 from handlers.settings_ui import _handle_setting_input
+from handlers.onboarding import handle_onboard_budget_input
 from core.config import logger, MAX_MESSAGE_LENGTH
 from datetime import datetime
 
@@ -25,6 +27,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     # Priority: check for a pending settings input before doing expense parsing
+    awaiting_onboard_budget = context.user_data.get('awaiting_onboard_budget')
+    if awaiting_onboard_budget:
+        await handle_onboard_budget_input(update, context)
+        return
+
     awaiting = context.user_data.get('awaiting_setting')
     if awaiting:
         await _handle_setting_input(update, context, awaiting)
@@ -58,20 +65,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = expense_data.get('amount')
             category = expense_data.get('category')
             description = expense_data.get('description', '')
+            planned = expense_data.get('planned', False)
+            due_date = expense_data.get('due_date')
 
             if amount and category:
-                await firestore_service.add_expense(user_id, amount, category, description)
+                tx_status = 'planned' if planned else 'completed'
+                await add_expense(user_id, amount, category, description, status=tx_status, due_date=due_date)
 
                 safe_desc = _escape_markdown(description)
                 is_income = expense_data.get('type') == 'income'
                 type_icon = "🟢" if is_income else "🔴"
-                word = "Income" if is_income else "Expense"
+                word = "Income" if is_income else ("Planned Expense" if planned else "Expense")
 
+                msg_status = f"\n📆 Due: {due_date}" if planned and due_date else ""
+                
                 response_text = (
                     f"✅ *{word} Saved!*\n\n"
                     f"💰 Amount: {type_icon} *₪{amount:.2f}*\n"
                     f"📂 Category: {_display_category(category)}\n"
-                    f"📝 Details: _{safe_desc}_\n"
+                    f"📝 Details: _{safe_desc}_{msg_status}\n"
                 )
 
                 # ── Currency Conversion Notice ──
@@ -86,14 +98,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # ── Budget / Goal Smart Notification ──
                 if is_income:
-                    profile = await firestore_service.get_profile(user_id)
+                    profile = await get_profile(user_id)
                     goal = profile.get('additional_info') if profile else None
                     if goal:
                         response_text += f"\n🎯 *Progress!* You're one step closer to: _{_escape_markdown(goal)}_"
                 else:
-                    budget = await firestore_service.get_budget(user_id)
+                    budget = await get_budget(user_id)
                     if budget and budget > 0:
-                        spent_this_month, _ = await firestore_service.get_monthly_summary(user_id)
+                        spent_this_month, _ = await get_monthly_summary(user_id)
                         pct = (spent_this_month / budget) * 100
                         bar_len = 10
                         filled = min(bar_len, int((pct / 100) * bar_len))

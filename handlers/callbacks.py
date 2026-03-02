@@ -5,8 +5,10 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-import services.database as db
-import services.firestore_service as firestore_service
+from database.expense_operations import add_expense, delete_expense, delete_all_expenses, delete_monthly_expenses, get_last_expense_id
+from database.user_management import get_profile, set_profile, get_budget, set_budget, get_user_settings, save_user_settings
+from database.queries import get_monthly_summary, get_recent_expenses, get_monthly_expenses, get_pending_payments
+from database.analytics_engine import get_daily_aggregation, get_category_totals, get_expense_totals, get_yearly_month_totals, export_expenses_csv, save_insight
 import services.llm_helper as llm_helper
 from handlers.utils import (
     _display_category, _escape_markdown, _get_cached_profile,
@@ -14,6 +16,7 @@ from handlers.utils import (
 )
 from services.charts import _generate_pie_chart
 from handlers.settings_ui import _show_settings, _profile_defaults
+from handlers.onboarding import onboard_lang_handler, onboard_cur_handler, onboard_account_handler
 from core.config import logger, VALID_CALLBACKS
 
 
@@ -30,8 +33,8 @@ MONTH_NAMES_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 async def _handle_this_month_view(query, telegram_id: int, year: int, month: int, data: str):
     """Renders a rich monthly summary with budget bar."""
-    spent, income = await firestore_service.get_monthly_summary(telegram_id, year, month)
-    budget = await firestore_service.get_budget(telegram_id)
+    spent, income = await get_monthly_summary(telegram_id, year, month)
+    budget = await get_budget(telegram_id)
     net = income - spent
 
     text = f"📅 *{MONTH_NAMES[month]} {year}*\n\n"
@@ -49,7 +52,7 @@ async def _handle_this_month_view(query, telegram_id: int, year: int, month: int
 
     text += "🔽 *Recent Transactions:*\n"
 
-    expenses = await asyncio.to_thread(db.get_monthly_expenses, telegram_id, year, month)
+    expenses = await get_monthly_expenses(telegram_id, year, month)
     if not expenses:
         text += "_No transactions logged._"
     else:
@@ -83,7 +86,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Confirmation Guards (always handled first) ──
     if data == 'confirm_delete_all':
-        count = await asyncio.to_thread(db.delete_all_expenses, telegram_id)
+        count = await delete_all_expenses(telegram_id)
         await query.edit_message_text(
             text=f"🗑️ *Done!* Deleted {count} expense(s).\n\nYou're starting fresh.",
             parse_mode='Markdown'
@@ -95,7 +98,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == 'confirm_delete_monthly':
-        count = await asyncio.to_thread(db.delete_monthly_expenses, telegram_id)
+        count = await delete_monthly_expenses(telegram_id)
         await query.edit_message_text(
             text=f"🗑️ *Done!* Deleted {count} expense(s) from this month.\n\nUse /menu to continue.",
             parse_mode='Markdown'
@@ -108,10 +111,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Prefix-Based Dynamic Callbacks ──
 
+    if data.startswith("onboard_lang_"):
+        await onboard_lang_handler(query, telegram_id, context, data)
+        return
+
+    if data.startswith("onboard_cur_"):
+        await onboard_cur_handler(query, telegram_id, context, data)
+        return
+
+    if data.startswith("onboard_acct_"):
+        await onboard_account_handler(query, telegram_id, context, data)
+        return
+
     if data.startswith("del_"):
         try:
             expense_id = int(data[4:])
-            success = await asyncio.to_thread(db.delete_expense, telegram_id, expense_id)
+            success = await delete_expense(telegram_id, expense_id)
             if success:
                 await query.edit_message_text(
                     text="🗑️ *Expense deleted!*\n\nUse /menu to refresh.", parse_mode='Markdown'
@@ -138,11 +153,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_langs = {'English', 'Hebrew', 'Spanish', 'French', 'German', 'Russian', 'Arabic', 'Portuguese'}
         if lang_name in valid_langs:
             try:
-                profile = await firestore_service.get_profile(telegram_id)
+                profile = await get_profile(telegram_id)
                 p = _profile_defaults(profile)
-                await firestore_service.set_profile(
+                await set_profile(
                     telegram_id,
-                    p['age'], p['yearly_income'], p['currency'], lang_name, p['additional_info']
+                    p['age'], p['yearly_income'], p['currency'], lang_name, p['additional_info'], p['account_type']
                 )
                 _invalidate_profile_cache(telegram_id)
                 await _show_settings(query, telegram_id, telegram_id, edit=True)
@@ -155,11 +170,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_curs = {'NIS', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'}
         if cur_code in valid_curs:
             try:
-                profile = await firestore_service.get_profile(telegram_id)
+                profile = await get_profile(telegram_id)
                 p = _profile_defaults(profile)
-                await firestore_service.set_profile(
+                await set_profile(
                     telegram_id,
-                    p['age'], p['yearly_income'], cur_code, p['language'], p['additional_info']
+                    p['age'], p['yearly_income'], cur_code, p['language'], p['additional_info'], p['account_type']
                 )
                 _invalidate_profile_cache(telegram_id)
                 await _show_settings(query, telegram_id, telegram_id, edit=True)
@@ -178,7 +193,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         amount = pending['amount']
         description = pending['description']
-        await firestore_service.add_expense(telegram_id, amount, cat_name, description)
+        await add_expense(telegram_id, amount, cat_name, description)
         context.user_data.pop('pending_expense', None)
         safe_desc = _escape_markdown(description)
         response_text = (
@@ -214,7 +229,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Static Callback Handlers ──
     try:
         if data == 'last_expenses':
-            expenses = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
+            expenses = await get_recent_expenses(user_id=telegram_id, limit=5)
             if not expenses:
                 await query.edit_message_text(
                     text="📭 No expenses found yet.",
@@ -255,7 +270,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == 'year_overview':
             now = datetime.now()
             year = now.year
-            month_totals = await asyncio.to_thread(db.get_yearly_month_totals, telegram_id, year)
+            month_totals = await get_yearly_month_totals(telegram_id, year)
             if not month_totals:
                 await query.edit_message_text(
                     text=f"📆 No expenses in {year} yet.",
@@ -281,6 +296,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == 'back_to_menu':
             from telegram import WebAppInfo
+            profile = await _get_cached_profile(telegram_id)
+            is_business = (profile.get('account_type') == 'business') if profile else False
+            
             webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
             keyboard = [
                 [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
@@ -288,8 +306,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
                 [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'),
                  InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
-                [InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')],
             ]
+            
+            if is_business:
+                keyboard.append([InlineKeyboardButton("📅 Pending & Forecast", callback_data='pending_list')])
+                
+            keyboard.append([InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')])
+            
             await query.edit_message_text(
                 text='📊 *My Finances Dashboard:*',
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -308,7 +331,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'pie_chart':
-            totals = await asyncio.to_thread(db.get_expense_totals, telegram_id)
+            totals = await get_expense_totals(telegram_id)
             if not totals:
                 await query.edit_message_text(text="📉 No data for a chart yet.")
                 return
@@ -340,16 +363,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             try:
-                raw_totals = await asyncio.to_thread(db.get_category_totals, telegram_id)
+                raw_totals = await get_category_totals(telegram_id)
                 totals = {cat: v.get('expenses', 0) for cat, v in raw_totals.items() if v.get('expenses', 0) > 0}
                 if not totals:
                     await query.edit_message_text(
                         text="💡 No spending data yet. Log some expenses first!", parse_mode='Markdown'
                     )
                     return
-                budget = await firestore_service.get_budget(telegram_id)
-                recent = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
-                profile = await firestore_service.get_profile(telegram_id)
+                budget = await get_budget(telegram_id)
+                recent = await get_recent_expenses(user_id=telegram_id, limit=5)
+                profile = await get_profile(telegram_id)
                 insight = await asyncio.to_thread(
                     llm_helper.generate_insights,
                     totals=totals,
@@ -368,7 +391,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                     return
                 now = datetime.now()
-                await asyncio.to_thread(db.save_insight, telegram_id, now.year, now.month, insight)
+                await save_insight(telegram_id, now.year, now.month, insight)
                 safe_insight = _escape_markdown(insight)
                 await query.edit_message_text(
                     text=f"💡 *FinTechBot Insights:*\n\n{safe_insight}", 
@@ -439,8 +462,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_budget':
-            budget = await firestore_service.get_budget(telegram_id)
-            total, _ = await firestore_service.get_monthly_summary(telegram_id)
+            budget = await get_budget(telegram_id)
+            total, _ = await get_monthly_summary(telegram_id)
             context.user_data['awaiting_setting'] = 'budget'
             budget_text = (
                 f"Current: *₪{budget:,.0f}*, spent *₪{total:,.0f}* this month." if budget
@@ -452,8 +475,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
             )
 
+        elif data == 'settings_set_goals':
+            profile = await get_profile(telegram_id)
+            current = (
+                f"_Current:_ {_escape_markdown(profile['additional_info'])}"
+                if profile and profile.get('additional_info') else "_Not set yet._"
+            )
+            context.user_data['awaiting_setting'] = 'goals'
+            await query.edit_message_text(
+                text=f"🎯 *What are your financial goals?*\n\n{current}\n\n_Type your new goals (or 'none' to clear):_",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
+        elif data == 'settings_toggle_account':
+            profile = await get_profile(telegram_id)
+            p = _profile_defaults(profile)
+            new_type = 'business' if p['account_type'] == 'personal' else 'personal'
+            await set_profile(telegram_id, p['age'], p['yearly_income'], p['currency'], p['language'], p['additional_info'], new_type)
+            _invalidate_profile_cache(telegram_id)
+            await query.answer(f"Switched to {new_type.title()} Mode!")
+            await _show_settings(query, telegram_id, telegram_id, edit=True)
+
+        elif data == 'settings_set_income':
+            profile = await get_profile(telegram_id)
+            currency = profile.get('currency', 'NIS') if profile else 'NIS'
+            income_val = profile.get('yearly_income', 0) if profile else 0
+            current = (
+                f"Current: *{income_val:,.0f} {currency} / year*"
+                if income_val else "_Not set yet._"
+            )
+            context.user_data['awaiting_setting'] = 'income'
+            await query.edit_message_text(
+                text=f"💵 *Set Annual Income*\n\n{current}\n\n✏️ Type your yearly income:",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='settings_tools')]])
+            )
+
         elif data == 'settings_set_age':
-            profile = await firestore_service.get_profile(telegram_id)
+            profile = await get_profile(telegram_id)
             current = (
                 f"Current: *{profile['age']}*"
                 if profile and profile.get('age') else "_Not set yet._"
@@ -466,7 +526,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_income':
-            profile = await firestore_service.get_profile(telegram_id)
+            profile = await get_profile(telegram_id)
             currency = profile.get('currency', 'NIS') if profile else 'NIS'
             income_val = profile.get('yearly_income', 0) if profile else 0
             current = (
@@ -481,7 +541,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_goals':
-            profile = await firestore_service.get_profile(telegram_id)
+            profile = await get_profile(telegram_id)
             current = (
                 f"_Current:_ {_escape_markdown(profile['additional_info'])}"
                 if profile and profile.get('additional_info') else "_Not set yet._"
@@ -499,14 +559,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'undo_last':
-            last_id = await asyncio.to_thread(db.get_last_expense_id, telegram_id)
+            last_id = await get_last_expense_id(telegram_id)
             if not last_id:
                 await query.edit_message_text(
                     text="📭 No expenses to undo.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]])
                 )
             else:
-                success = await asyncio.to_thread(db.delete_expense, telegram_id, last_id)
+                success = await delete_expense(telegram_id, last_id)
                 if success:
                     await query.edit_message_text(
                         text="↩️ *Last expense removed!*",
@@ -520,7 +580,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
 
         elif data == 'export_csv':
-            csv_data = await asyncio.to_thread(db.export_expenses_csv, telegram_id)
+            csv_data = await export_expenses_csv(telegram_id)
             if not csv_data or csv_data.strip() == 'Date,Amount,Category,Description':
                 await query.edit_message_text(
                     text="📭 No expenses to export.",
@@ -537,6 +597,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text="✅ Export sent successfully!",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Dashboard", callback_data='back_to_menu')]])
                 )
+
+        elif data == 'pending_list':
+            pending = await get_pending_payments(telegram_id)
+            if not pending:
+                text = "📅 *No pending payments found.*\n\nYou can log upcoming bills like: _'internet 100 next monday'_"
+            else:
+                text = "⏳ *Upcoming / Planned Payments:*\n\n"
+                for exp in pending:
+                    # exp structure: (id, date, amount, category, description, type, due_date)
+                    cat_disp = _display_category(exp[3])
+                    due = exp[6] if exp[6] else exp[1][:10]
+                    text += f"• *₪{exp[2]:.2f}* | {cat_disp}\n"
+                    text += f"  📅 Due: {due}\n"
+                    if exp[4]: text += f"  📝 _{_escape_markdown(exp[4])}_\n"
+                    text += "\n"
+                
+                text += "💡 _These are tracked in your Cash Flow Forecast on the Web Dashboard._"
+
+            await query.edit_message_text(
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data='back_to_menu')]])
+            )
 
         elif data == 'delete_all':
             keyboard = [
