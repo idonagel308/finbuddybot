@@ -31,7 +31,7 @@ MONTH_NAMES_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 async def _handle_this_month_view(query, telegram_id: int, year: int, month: int, data: str):
     """Renders a rich monthly summary with budget bar."""
     spent, income = await firestore_service.get_monthly_summary(telegram_id, year, month)
-    budget = await asyncio.to_thread(db.get_budget, telegram_id)
+    budget = await firestore_service.get_budget(telegram_id)
     net = income - spent
 
     text = f"📅 *{MONTH_NAMES[month]} {year}*\n\n"
@@ -138,10 +138,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_langs = {'English', 'Hebrew', 'Spanish', 'French', 'German', 'Russian', 'Arabic', 'Portuguese'}
         if lang_name in valid_langs:
             try:
-                profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                profile = await firestore_service.get_profile(telegram_id)
                 p = _profile_defaults(profile)
-                await asyncio.to_thread(
-                    db.set_profile, telegram_id,
+                await firestore_service.set_profile(
+                    telegram_id,
                     p['age'], p['yearly_income'], p['currency'], lang_name, p['additional_info']
                 )
                 _invalidate_profile_cache(telegram_id)
@@ -155,10 +155,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         valid_curs = {'NIS', 'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY'}
         if cur_code in valid_curs:
             try:
-                profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                profile = await firestore_service.get_profile(telegram_id)
                 p = _profile_defaults(profile)
-                await asyncio.to_thread(
-                    db.set_profile, telegram_id,
+                await firestore_service.set_profile(
+                    telegram_id,
                     p['age'], p['yearly_income'], cur_code, p['language'], p['additional_info']
                 )
                 _invalidate_profile_cache(telegram_id)
@@ -347,9 +347,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         text="💡 No spending data yet. Log some expenses first!", parse_mode='Markdown'
                     )
                     return
-                budget = await asyncio.to_thread(db.get_budget, telegram_id)
+                budget = await firestore_service.get_budget(telegram_id)
                 recent = await asyncio.to_thread(db.get_recent_expenses, user_id=telegram_id, limit=5)
-                profile = await asyncio.to_thread(db.get_profile, telegram_id)
+                profile = await firestore_service.get_profile(telegram_id)
                 insight = await asyncio.to_thread(
                     llm_helper.generate_insights,
                     totals=totals,
@@ -439,7 +439,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_budget':
-            budget = await asyncio.to_thread(db.get_budget, telegram_id)
+            budget = await firestore_service.get_budget(telegram_id)
             total, _ = await firestore_service.get_monthly_summary(telegram_id)
             context.user_data['awaiting_setting'] = 'budget'
             budget_text = (
@@ -453,7 +453,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_age':
-            profile = await asyncio.to_thread(db.get_profile, telegram_id)
+            profile = await firestore_service.get_profile(telegram_id)
             current = (
                 f"Current: *{profile['age']}*"
                 if profile and profile.get('age') else "_Not set yet._"
@@ -466,7 +466,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_income':
-            profile = await asyncio.to_thread(db.get_profile, telegram_id)
+            profile = await firestore_service.get_profile(telegram_id)
             currency = profile.get('currency', 'NIS') if profile else 'NIS'
             income_val = profile.get('yearly_income', 0) if profile else 0
             current = (
@@ -481,7 +481,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == 'settings_set_goals':
-            profile = await asyncio.to_thread(db.get_profile, telegram_id)
+            profile = await firestore_service.get_profile(telegram_id)
             current = (
                 f"_Current:_ {_escape_markdown(profile['additional_info'])}"
                 if profile and profile.get('additional_info') else "_Not set yet._"

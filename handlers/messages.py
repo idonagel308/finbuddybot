@@ -86,12 +86,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 # ── Budget / Goal Smart Notification ──
                 if is_income:
-                    profile = await asyncio.to_thread(db.get_profile, user_id)
+                    profile = await firestore_service.get_profile(user_id)
                     goal = profile.get('additional_info') if profile else None
                     if goal:
                         response_text += f"\n🎯 *Progress!* You're one step closer to: _{_escape_markdown(goal)}_"
                 else:
-                    budget = await asyncio.to_thread(db.get_budget, user_id)
+                    budget = await firestore_service.get_budget(user_id)
                     if budget and budget > 0:
                         spent_this_month, _ = await firestore_service.get_monthly_summary(user_id)
                         pct = (spent_this_month / budget) * 100

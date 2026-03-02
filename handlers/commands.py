@@ -125,14 +125,14 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if amount <= 0 or amount > 1_000_000:
                 await _safe_send(context.bot, chat_id, "⚠️ Budget must be between 1 and 1,000,000.")
                 return
-            db.set_budget(user_id, amount)
+            await firestore_service.set_budget(user_id, amount)
             await _safe_send(context.bot, chat_id, f"💰 *Monthly budget set to {amount:.0f}!*")
         except ValueError as e:
             await _safe_send(context.bot, chat_id, f"⚠️ {str(e)}")
         except IndexError:
             await _safe_send(context.bot, chat_id, "⚠️ Usage: /budget `5000`")
     else:
-        budget = db.get_budget(user_id)
+        budget = await firestore_service.get_budget(user_id)
         if budget:
             total, _ = await firestore_service.get_monthly_summary(user_id)
             remaining = budget - total

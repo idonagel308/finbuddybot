@@ -265,11 +265,11 @@ async def webapp_dashboard(
 ):
     """Serve real data for the Telegram Web App dashboard."""
     _validate_user_id(user_id)
-    profile = db.get_profile(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
+    profile = await firestore_service.get_profile(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
     
     # 1. Budget and Monthly Spend
     total_spent, total_income = await firestore_service.get_monthly_summary(user_id, year=year, month=month)
-    monthly_budget = db.get_budget(user_id) or 0
+    monthly_budget = await firestore_service.get_budget(user_id) or 0
     net_flow = total_income - total_spent
     
     # Calculate savings (simplistic tracking for now: income - spent. Real implementation would track specific 'transfer' txs)
@@ -282,14 +282,15 @@ async def webapp_dashboard(
     }
 
     # 1.5 Generate Real CashFlow Series for the line chart
-    cashFlowSeries = db.get_daily_aggregation(user_id, year=year, month=month)
+    cashFlowSeries = await firestore_service.get_daily_aggregation(user_id, year=year, month=month)
 
     # 2. Recent Transactions (Formatted for the JS list widget)
     # If a specific month is selected, we should fetch that month's expenses.
     if month is not None or year is not None:
-        rows = db.get_monthly_expenses(user_id, year=year, month=month)[:10]
+        rows = await firestore_service.get_monthly_expenses(user_id, year=year, month=month)
+        rows = rows[:10]
     else:
-        rows = db.get_recent_expenses(user_id, limit=6)
+        rows = await firestore_service.get_recent_expenses(user_id, limit=6)
         
     recent = []
     for r in rows:
@@ -363,10 +364,10 @@ class UserSettings(BaseModel):
     accent_color: str = None
 
 @app.get("/api/webapp/settings")
-async def get_webapp_settings(user_id: int = Depends(verify_telegram_webapp)):
-    """Fetch user-specific dashboard preferences."""
-    settings = db.get_user_settings(user_id)
-    return settings
+    async def get_webapp_settings(user_id: int = Depends(verify_telegram_webapp)):
+        """Fetch user-specific dashboard preferences."""
+        settings = await firestore_service.get_user_settings(user_id)
+        return settings
 
 @app.post("/api/webapp/settings")
 async def save_webapp_settings(
@@ -374,7 +375,7 @@ async def save_webapp_settings(
     user_id: int = Depends(verify_telegram_webapp)
 ):
     """Save user-specific dashboard preferences."""
-    db.save_user_settings(
+    await firestore_service.save_user_settings(
         user_id,
         theme=settings.theme,
         layout=settings.layout,

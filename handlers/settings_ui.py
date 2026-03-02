@@ -3,6 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 import services.database as db
+import services.firestore_service as firestore_service
 from handlers.utils import _safe_send, _private_only, _invalidate_profile_cache
 
 
@@ -48,7 +49,7 @@ def _get_settings_keyboard(profile: dict | None) -> InlineKeyboardMarkup:
 
 async def _show_settings(target, chat_id: int, user_id: int, edit: bool = False):
     """Renders the settings hub. Use edit=True when updating from a CallbackQuery."""
-    profile = await asyncio.to_thread(db.get_profile, user_id)
+    profile = await firestore_service.get_profile(user_id)
     text = (
         "⚙️ *Settings & Profile*\n\n"
         "_Tap any setting to change it individually._\n"
@@ -81,14 +82,14 @@ async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data.pop('awaiting_setting', None)
 
     try:
-        profile = await asyncio.to_thread(db.get_profile, user_id)
+        profile = await firestore_service.get_profile(user_id)
         p = _profile_defaults(profile)
 
         if setting_key == 'age':
             age = int(text)
             if not (13 <= age <= 120):
                 raise ValueError("Age out of range")
-            await asyncio.to_thread(db.set_profile, user_id, age, p['yearly_income'], p['currency'], p['language'], p['additional_info'])
+            await firestore_service.set_profile(user_id, age, p['yearly_income'], p['currency'], p['language'], p['additional_info'])
             _invalidate_profile_cache(user_id)
             await _safe_send(context.bot, chat_id, f"✅ *Age updated to {age}.*", parse_mode='Markdown')
 
@@ -96,13 +97,13 @@ async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TY
             income = float(text.replace(',', '').replace(' ', ''))
             if income < 0:
                 raise ValueError("Income must be positive")
-            await asyncio.to_thread(db.set_profile, user_id, p['age'], income, p['currency'], p['language'], p['additional_info'])
+            await firestore_service.set_profile(user_id, p['age'], income, p['currency'], p['language'], p['additional_info'])
             _invalidate_profile_cache(user_id)
             await _safe_send(context.bot, chat_id, f"✅ *Annual income updated to {income:,.0f}.*", parse_mode='Markdown')
 
         elif setting_key == 'goals':
             info = '' if text.lower() == 'none' else text
-            await asyncio.to_thread(db.set_profile, user_id, p['age'], p['yearly_income'], p['currency'], p['language'], info)
+            await firestore_service.set_profile(user_id, p['age'], p['yearly_income'], p['currency'], p['language'], info)
             _invalidate_profile_cache(user_id)
             await _safe_send(context.bot, chat_id, "✅ *Financial goals updated.*", parse_mode='Markdown')
 
@@ -110,7 +111,7 @@ async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TY
             amount = float(text.replace(',', '').replace(' ', ''))
             if amount <= 0 or amount > db.MAX_AMOUNT:
                 raise ValueError("Budget out of range")
-            await asyncio.to_thread(db.set_budget, user_id, amount)
+            await firestore_service.set_budget(user_id, amount)
             _invalidate_profile_cache(user_id)
             await _safe_send(context.bot, chat_id, f"✅ *Monthly budget set to {amount:,.0f}.*", parse_mode='Markdown')
 
@@ -118,7 +119,7 @@ async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TY
             if len(text) > 50:
                 await _safe_send(context.bot, chat_id, "⚠️ Language name too long. Please use a standard name like 'Italian'.")
                 return True
-            await asyncio.to_thread(db.set_profile, user_id, p['age'], p['yearly_income'], p['currency'], text, p['additional_info'])
+            await firestore_service.set_profile(user_id, p['age'], p['yearly_income'], p['currency'], text, p['additional_info'])
             _invalidate_profile_cache(user_id)
             await _safe_send(context.bot, chat_id, f"✅ *Language set to {text}.*", parse_mode='Markdown')
 
@@ -127,7 +128,7 @@ async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TY
             if len(cur) > 10:
                 await _safe_send(context.bot, chat_id, "⚠️ Code too long. Use standard codes like CHF, TRY, BRL.")
                 return True
-            await asyncio.to_thread(db.set_profile, user_id, p['age'], p['yearly_income'], cur, p['language'], p['additional_info'])
+            await firestore_service.set_profile(user_id, p['age'], p['yearly_income'], cur, p['language'], p['additional_info'])
             _invalidate_profile_cache(user_id)
             await _safe_send(context.bot, chat_id, f"✅ *Currency set to {cur}.*", parse_mode='Markdown')
 
