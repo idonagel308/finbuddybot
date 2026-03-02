@@ -24,6 +24,7 @@ from telegram import Update
 import asyncio
 
 import services.database as db
+import services.firestore_service as firestore_service
 from .bot_setup import get_application
 from .models import ExpenseModel, ExpenseResponse
 from .security import verify_api_key, rate_limit_check, verify_telegram_webapp
@@ -45,8 +46,6 @@ async def lifespan(app: FastAPI):
     global telegram_app
     try:
         db.init_db()
-        # Cold Start: Sync from Sheets to populate local SQLite cache
-        db.sync_from_sheets()
     except Exception as e:
         logger.error(f"DB init/sync failed: {e}")
 
@@ -65,11 +64,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    logger.info("Initiating graceful shutdown...")
     try:
-        logger.info("Running final sync to Google Sheets to ensure perfect consistency...")
-        # Since this could take a few seconds, Cloud Run gives us 10s of graceful SIGTERM shutdown time
-        db.sync_all_to_sheets() 
+        logger.info("Graceful shutdown cleanup...")
     except Exception as e:
         logger.error(f"Final sync failed: {e}")
 
@@ -149,7 +145,7 @@ async def health_check():
 
 
 @app.post("/webhook/{token}")
-async def telegram_webhook(token: str, request: Request):
+async def telegram_webhook(token: str, request: Request, background_tasks: BackgroundTasks):
     """Ingest Telegram updates via Webhook."""
     import hmac
     expected_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -160,11 +156,12 @@ async def telegram_webhook(token: str, request: Request):
     try:
         data = await request.json()
         update = Update.de_json(data, telegram_app.bot)
-        await telegram_app.process_update(update)
+        # Background high-concurrency processing for multi-tenancy scale
+        background_tasks.add_task(telegram_app.process_update, update)
         return {"status": "ok"}
     except Exception as e:
-        logger.error(f"Error processing telegram update: {e}")
-        return JSONResponse(status_code=500, content={"detail": "Error processing update"})
+        logger.error(f"Error ingest telegram update: {e}")
+        return JSONResponse(status_code=500, content={"detail": "Error ingesting update"})
 
 
 @app.get(
@@ -206,7 +203,7 @@ class InboundExpenseModel(BaseModel):
 async def add_expense(expense: InboundExpenseModel, background_tasks: BackgroundTasks):
     """Add a new expense."""
     try:
-        db.add_expense(
+        await firestore_service.add_expense(
             expense.user_id, expense.amount,
             expense.category, expense.description
         )
@@ -239,7 +236,7 @@ async def delete_expense(user_id: int, expense_id: int):
 async def get_summary(user_id: int):
     """Get total spent this month."""
     _validate_user_id(user_id)
-    total, _ = db.get_monthly_summary(user_id)
+    total, _ = await firestore_service.get_monthly_summary(user_id)
     return {"user_id": user_id, "monthly_total": total}
 
 
@@ -271,7 +268,7 @@ async def webapp_dashboard(
     profile = db.get_profile(user_id) or {"currency": "NIS", "yearly_income": 0, "language": "English"}
     
     # 1. Budget and Monthly Spend
-    total_spent, total_income = db.get_monthly_summary(user_id, year=year, month=month)
+    total_spent, total_income = await firestore_service.get_monthly_summary(user_id, year=year, month=month)
     monthly_budget = db.get_budget(user_id) or 0
     net_flow = total_income - total_spent
     
@@ -401,7 +398,7 @@ async def webapp_transaction(
     """Log a transaction from Web App."""
     _validate_user_id(user_id)
     try:
-        db.add_expense(user_id, tx.amount, tx.category, tx.description)
+        await firestore_service.add_expense(user_id, tx.amount, tx.category, tx.description)
         return {"status": "success"}
     except Exception as e:
         logger.error(f"Webapp tx error: {e}")

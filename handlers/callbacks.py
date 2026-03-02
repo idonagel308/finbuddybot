@@ -6,6 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 import services.database as db
+import services.firestore_service as firestore_service
 import services.llm_helper as llm_helper
 from handlers.utils import (
     _display_category, _escape_markdown, _get_cached_profile,
@@ -29,7 +30,7 @@ MONTH_NAMES_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
 
 async def _handle_this_month_view(query, telegram_id: int, year: int, month: int, data: str):
     """Renders a rich monthly summary with budget bar."""
-    spent, income = await asyncio.to_thread(db.get_monthly_summary, telegram_id, year, month)
+    spent, income = await firestore_service.get_monthly_summary(telegram_id, year, month)
     budget = await asyncio.to_thread(db.get_budget, telegram_id)
     net = income - spent
 
@@ -177,7 +178,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         amount = pending['amount']
         description = pending['description']
-        await asyncio.to_thread(db.add_expense, telegram_id, amount, cat_name, description)
+        await firestore_service.add_expense(telegram_id, amount, cat_name, description)
         context.user_data.pop('pending_expense', None)
         safe_desc = _escape_markdown(description)
         response_text = (
@@ -439,7 +440,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == 'settings_set_budget':
             budget = await asyncio.to_thread(db.get_budget, telegram_id)
-            total, _ = await asyncio.to_thread(db.get_monthly_summary, telegram_id)
+            total, _ = await firestore_service.get_monthly_summary(telegram_id)
             context.user_data['awaiting_setting'] = 'budget'
             budget_text = (
                 f"Current: *₪{budget:,.0f}*, spent *₪{total:,.0f}* this month." if budget

@@ -3,6 +3,7 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 
 import services.database as db
+import services.firestore_service as firestore_service
 import services.llm_helper as llm_helper
 from handlers.utils import (
     _display_category, _escape_markdown, _safe_send,
@@ -59,7 +60,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description = expense_data.get('description', '')
 
             if amount and category:
-                await asyncio.to_thread(db.add_expense, user_id, amount, category, description)
+                await firestore_service.add_expense(user_id, amount, category, description)
 
                 safe_desc = _escape_markdown(description)
                 is_income = expense_data.get('type') == 'income'
@@ -92,7 +93,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     budget = await asyncio.to_thread(db.get_budget, user_id)
                     if budget and budget > 0:
-                        spent_this_month, _ = await asyncio.to_thread(db.get_monthly_summary, user_id)
+                        spent_this_month, _ = await firestore_service.get_monthly_summary(user_id)
                         pct = (spent_this_month / budget) * 100
                         bar_len = 10
                         filled = min(bar_len, int((pct / 100) * bar_len))

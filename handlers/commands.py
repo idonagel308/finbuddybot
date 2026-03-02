@@ -4,6 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppI
 from telegram.ext import ContextTypes
 
 import services.database as db
+import services.firestore_service as firestore_service
 from handlers.utils import _safe_send, _private_only
 
 
@@ -133,7 +134,7 @@ async def budget_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         budget = db.get_budget(user_id)
         if budget:
-            total, _ = db.get_monthly_summary(user_id)
+            total, _ = await firestore_service.get_monthly_summary(user_id)
             remaining = budget - total
             status = "✅" if remaining > 0 else "🚨"
             await _safe_send(
