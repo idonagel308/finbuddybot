@@ -3,7 +3,7 @@
 keys.txt
 service_account.json
 credentials.json
-
+trigger.yaml
 # Database
 *.db
 finance.db
