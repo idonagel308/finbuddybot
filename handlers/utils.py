@@ -188,7 +188,7 @@ def _private_only(func):
     Includes null guards.
     """
     @wraps(func)
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if not update:
             return
         
@@ -212,5 +212,5 @@ def _private_only(func):
             )
             return
 
-        return await func(update, context)
+        return await func(update, context, *args, **kwargs)
     return wrapper
