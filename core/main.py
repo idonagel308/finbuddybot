@@ -34,7 +34,6 @@ from .bot_setup import get_application
 from .models import ExpenseModel, ExpenseResponse
 from .security import verify_api_key, rate_limit_check, verify_telegram_webapp
 # ── Logging & Uptime ──
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 _start_time = time.time()
 

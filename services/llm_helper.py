@@ -214,18 +214,23 @@ def _apply_currency_conversion(parsed: dict, original_text: str) -> dict:
     if not parsed:
         return parsed
 
-    detected = curr.detect_currency(original_text)
-    original_amount = parsed['amount']
+    try:
+        detected = curr.detect_currency(original_text)
+        original_amount = parsed['amount']
 
-    if detected != 'NIS':
-        nis_amount = curr.convert_to_nis(original_amount, detected)
-        parsed['original_amount'] = original_amount
-        parsed['original_currency'] = detected
-        parsed['amount'] = nis_amount
-        parsed['converted'] = True
-    else:
-        parsed['original_currency'] = 'NIS'
+        if detected != 'NIS':
+            nis_amount = curr.convert_to_nis(original_amount, detected)
+            parsed['original_amount'] = original_amount
+            parsed['original_currency'] = detected
+            parsed['amount'] = nis_amount
+            parsed['converted'] = True
+        else:
+            parsed['original_currency'] = 'NIS'
+            parsed['converted'] = False
+    except Exception as e:
+        logger.warning(f"Currency conversion failed: {e}")
         parsed['converted'] = False
+        parsed['original_currency'] = 'NIS'
 
     return parsed
 

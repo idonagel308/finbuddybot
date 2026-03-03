@@ -1,14 +1,21 @@
 import os
 import logging
+import sys
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure global logging
+# Force-reset any existing logging handlers (prevents rogue App Engine/Cloud Logging handlers)
+root = logging.getLogger()
+for handler in root.handlers[:]:
+    root.removeHandler(handler)
+
+# Configure global logging specifically for Cloud Run (Standard Output)
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    level=logging.INFO,
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 

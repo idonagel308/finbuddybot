@@ -41,6 +41,8 @@ async def get_monthly_summary(user_id: int, year: Optional[int] = None, month: O
                 
         return total_exp, total_inc
     except Exception as e:
+        # Use print to ensure error visibility even if logging handlers crash
+        print(f"!!! FIRESTORE ERROR for user {user_id}: {type(e).__name__}: {e}")
         logger.error(f"Error fetching monthly summary from Firestore for user {user_id}: {e}")
         return 0.0, 0.0
 

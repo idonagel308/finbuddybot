@@ -14,6 +14,7 @@ from handlers.settings_ui import _handle_setting_input
 from handlers.onboarding import handle_onboard_budget_input
 from core.config import logger, MAX_MESSAGE_LENGTH
 from datetime import datetime
+import traceback
 
 
 @_private_only
@@ -153,6 +154,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response_text = "⚠️ Invalid expense data. Please check the amount and try again."
     except Exception as e:
         logger.error(f"Unexpected error for user {user_id}: {type(e).__name__}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         response_text = "⚠️ *Service Unavailable*\nMy AI engine encountered a temporary error. Please try again later or use the /menu dashboard."
 
     # Delete the "Processing..." placeholder
