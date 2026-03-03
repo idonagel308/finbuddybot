@@ -4,6 +4,8 @@ keys.txt
 service_account.json
 credentials.json
 trigger.yaml
+trigger_config.yaml
+tmp_deploy*.py
 # Database
 *.db
 finance.db
