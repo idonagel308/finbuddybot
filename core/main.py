@@ -86,8 +86,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Bot startup failed: {e}")
 
-    # Start bot in background task
-    asyncio.create_task(_start_bot())
+    # Start bot synchronously during startup to prevent webhook races
+    await _start_bot()
     yield
 
     # Shutdown
