@@ -31,7 +31,7 @@ def _get_settings_keyboard(profile: dict | None) -> InlineKeyboardMarkup:
     acct    = p['account_type'].title()
     import os
     from telegram import WebAppInfo
-    webapp_url = os.getenv("WEBAPP_URL", "https://your-ngrok-url.ngrok-free.app/webapp")
+    webapp_url = os.getenv("WEBAPP_URL", "http://localhost:8000/webapp")
 
     keyboard = [
         [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
@@ -111,7 +111,7 @@ async def _handle_setting_input(update: Update, context: ContextTypes.DEFAULT_TY
 
         elif setting_key == 'budget':
             amount = float(text.replace(',', '').replace(' ', ''))
-            if amount <= 0 or amount > db.MAX_AMOUNT:
+            if amount <= 0 or amount > 100_000_000:
                 raise ValueError("Budget out of range")
             await set_budget(user_id, amount)
             _invalidate_profile_cache(user_id)

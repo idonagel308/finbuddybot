@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 # Mock the client BEFORE importing the service to prevent ADC error
-mock_db = AsyncMock()
+mock_db = MagicMock()
 with patch('google.cloud.firestore.AsyncClient', return_value=mock_db):
     import database.expense_operations as expense_operations
     import database.user_management as user_management
@@ -23,10 +23,10 @@ class TestFirestorePackage(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res, "test_id")
         
         # Test get_profile logic
-        mock_profile_doc = AsyncMock()
+        mock_profile_doc = MagicMock()
         mock_profile_doc.exists = True
         mock_profile_doc.to_dict.return_value = {"profile": {"age": 25}}
-        mock_db.collection.return_value.document.return_value.get.return_value = mock_profile_doc
+        mock_db.collection.return_value.document.return_value.get = AsyncMock(return_value=mock_profile_doc)
         
         profile = await user_management.get_profile(123)
         self.assertEqual(profile['age'], 25)

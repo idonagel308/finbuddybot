@@ -24,8 +24,9 @@ else:
 
 # Models to try in order of preference
 MODELS_TO_TRY = [
-    "gemini-2.0-flash",  # High availability
-    "gemini-1.5-flash",  # Stable fallback
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash",
+    "gemini-pro",
 ]
 
 ALLOWED_CATEGORIES = {
