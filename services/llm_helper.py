@@ -29,8 +29,8 @@ else:
 
 # Models to try in order of preference
 MODELS_TO_TRY = [
-    "gemini-2.5-flash",
     "gemini-2.0-flash",
+    "gemini-1.5-flash",
     "gemini-flash-latest",
 ]
 
@@ -351,7 +351,7 @@ def translate(text: str, target_language: str) -> str:
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=prompt,
             config=types.GenerateContentConfig(
                 temperature=0.0,

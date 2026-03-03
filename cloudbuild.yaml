@@ -17,7 +17,7 @@ steps:
       - '--image'
       - 'gcr.io/$PROJECT_ID/fintech-bot'
       - '--region'
-      - 'us-central1'
+      - 'me-west1'
       - '--project'
       - '$PROJECT_ID'
       - '--platform'
