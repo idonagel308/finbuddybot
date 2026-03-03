@@ -56,18 +56,30 @@ async def lifespan(app: FastAPI):
             await telegram_app.initialize()
             await telegram_app.start()
 
-            webhook_url = os.getenv("WEBHOOK_URL")
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
             
-            if webhook_url:
-                # Cloud Mode: Set webhook
-                url = f"{webhook_url.rstrip('/')}/webhook/{bot_token}"
+            # Determine webhook URL:
+            # 1. Explicit WEBHOOK_URL from env (highest priority)
+            # 2. Auto-detect from WEBAPP_URL (strip /webapp suffix)
+            # 3. Auto-detect from Cloud Run K_SERVICE env var
+            webhook_base = os.getenv("WEBHOOK_URL")
+            if not webhook_base:
+                webapp_url = os.getenv("WEBAPP_URL", "")
+                if webapp_url and "run.app" in webapp_url:
+                    webhook_base = webapp_url.replace("/webapp", "")
+                elif os.getenv("K_SERVICE"):
+                    # Running on Cloud Run — construct from known vars
+                    region = os.getenv("K_REGION", "us-central1")
+                    project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+                    service = os.getenv("K_SERVICE", "")
+                    webhook_base = f"https://{service}-{project}.{region}.run.app"
+
+            if webhook_base:
+                url = f"{webhook_base.rstrip('/')}/webhook/{bot_token}"
                 await telegram_app.bot.set_webhook(url=url)
-                logger.info(f"Bot configured for Webhook: {url}")
+                logger.info(f"Webhook set: {url}")
             else:
-                # Local Mode: Start polling in background
-                await telegram_app.updater.start_polling(drop_pending_updates=True)
-                logger.info("Bot configured for Polling (Local Mode).")
+                logger.warning("No WEBHOOK_URL detected. Bot will not receive messages!")
             
             # Start proactive payment reminder job
             asyncio.create_task(payment_reminder_job())
