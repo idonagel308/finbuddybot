@@ -15,18 +15,23 @@ logger = logging.getLogger(__name__)
 # Configure Gemini API
 api_key = os.getenv("GOOGLE_API_KEY")
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
+client = None
 if api_key:
-    genai.configure(api_key=api_key)
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        logger.error(f"Failed to initialize GenAI client: {e}")
 else:
     logger.warning("GOOGLE_API_KEY not set — LLM features disabled")
 
 # Models to try in order of preference
 MODELS_TO_TRY = [
-    "gemini-1.5-flash-latest",
-    "gemini-1.5-flash",
-    "gemini-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-flash-latest",
 ]
 
 ALLOWED_CATEGORIES = {
@@ -300,10 +305,10 @@ def generate_insights(
 
     for model_name in MODELS_TO_TRY:
         try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
                     temperature=0.5,
                     max_output_tokens=400,
                 )
@@ -345,10 +350,10 @@ def translate(text: str, target_language: str) -> str:
         return text
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(
                 temperature=0.0,
                 max_output_tokens=800,
             )
@@ -412,11 +417,12 @@ Examples:
         if api_key:
             for model_name in MODELS_TO_TRY:
                 try:
-                    model = genai.GenerativeModel(model_name)
-                    response = model.generate_content(
-                        prompt,
-                        generation_config=genai.types.GenerationConfig(
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
                             temperature=0.1,
+                            response_mime_type="application/json",
                         )
                     )
 
@@ -470,54 +476,59 @@ Examples:
     if intent == 'not_transaction':
         return {"status": "not_transaction"}
 
-    text_lower = safe_text.lower()
-    
-    # Extract all numbers. Also handle Hebrew-attached prefixes: ב20, ב-20, l35
-    # Replace any character run before a digit that is NOT a digit or dot with a space
-    normalized = re.sub(r'[^\d\s.,](\d)', r' \1', text_lower)
-    numbers = re.findall(r'\b\d+(?:\.\d+)?\b', normalized)
-    if not numbers:
-        return {"status": "no_category"}
+    try:
+        text_lower = safe_text.lower()
         
-    amount = float(numbers[0])
-    if amount <= 0 or amount > MAX_AMOUNT:
-        return {"status": "no_category"}
+        # Extract all numbers. Also handle Hebrew-attached prefixes: ב20, ב-20, l35
+        # Replace any character run before a digit that is NOT a digit or dot with a space
+        normalized = re.sub(r'[^\d\s.,](\d)', r' \1', text_lower)
+        numbers = re.findall(r'\b\d+(?:\.\d+)?\b', normalized)
+        if not numbers:
+            return {"status": "no_category"}
+            
+        amount = float(numbers[0])
+        if amount <= 0 or amount > MAX_AMOUNT:
+            return {"status": "no_category"}
+    
+        # Determine type fallback using signals
+        words_set = set(re.sub(r'[.,!?()]', '', text_lower).split())
+        tx_type = 'income' if bool(words_set & _STRONG_INCOME_SIGNALS) else 'expense'
+    
+        # Remove the amount string from the text to get the description
+        desc_text = re.sub(rf'\b{re.escape(str(int(amount)))}\b', '', text_lower, count=1).strip()
+        
+        # Strip common filler/currency words
+        desc_cleaned = re.sub(
+            r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|אכלתי|שתיתי|עלה|עלתה|עולה)\b',
+            '', desc_text, flags=re.IGNORECASE
+        )
+        
+        # Strip common Hebrew prepositions (ב-, על, של, ל-)
+        desc_cleaned = re.sub(r'(?:^|\s)(?:ב-?|על|של|ל-?)(?=\s|$)', ' ', desc_cleaned)
+        
+        # Clean up multiple spaces, leading/trailing dashes
+        desc_cleaned = re.sub(r'[-\s]+', ' ', desc_cleaned).strip(' -')
+        
+        if not desc_cleaned:
+            desc_cleaned = "Expense"
+    
+        mapped_category = _map_category(desc_cleaned)
+        
+        # Always succeed if we got an amount and description, even if category is Other
+        result = _apply_currency_conversion({
+            "amount": amount,
+            "type": tx_type,
+            "category": mapped_category,
+            "description": desc_cleaned,
+            "planned": False,
+            "due_date": None
+        }, text)
+        result["status"] = "success"
+        return result
 
-    # Determine type fallback using signals
-    words_set = set(re.sub(r'[.,!?()]', '', text_lower).split())
-    tx_type = 'income' if bool(words_set & _STRONG_INCOME_SIGNALS) else 'expense'
-
-    # Remove the amount string from the text to get the description
-    desc_text = re.sub(rf'\b{re.escape(str(int(amount)))}\b', '', text_lower, count=1).strip()
-    
-    # Strip common filler/currency words
-    desc_cleaned = re.sub(
-        r'\b(?:on|for|at|spent|paid|bought|cost|price|charged|pay|tip|bill|fee|ordered|the|a|nis|usd|eur|gbp|ils|shekels|dollars|שקל|שקלים|ש"ח|שילמתי|קניתי|הוצאתי|אכלתי|שתיתי|עלה|עלתה|עולה)\b',
-        '', desc_text, flags=re.IGNORECASE
-    )
-    
-    # Strip common Hebrew prepositions (ב-, על, של, ל-)
-    desc_cleaned = re.sub(r'(?:^|\s)(?:ב-?|על|של|ל-?)(?=\s|$)', ' ', desc_cleaned)
-    
-    # Clean up multiple spaces, leading/trailing dashes
-    desc_cleaned = re.sub(r'[-\s]+', ' ', desc_cleaned).strip(' -')
-    
-    if not desc_cleaned:
-        desc_cleaned = "Expense"
-
-    mapped_category = _map_category(desc_cleaned)
-    
-    # Always succeed if we got an amount and description, even if category is Other
-    result = _apply_currency_conversion({
-        "amount": amount,
-        "type": tx_type,
-        "category": mapped_category,
-        "description": desc_cleaned,
-        "planned": False,
-        "due_date": None
-    }, text)
-    result["status"] = "success"
-    return result
+    except Exception as fallback_e:
+        logger.error(f"parse_expense regex fallback failed: {fallback_e}")
+        return {"status": "error"}
 
 
 # Pre-built category mapping — O(1) lookup instead of O(n) scan

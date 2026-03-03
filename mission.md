@@ -1,56 +1,51 @@
-# FinTechBot: Phase 4 Mission — Persistence Integrity & Seamless UX �
+# 🚨 Mission: Stabilize & Upgrade FinTech Bot
 
-## Executive Summary
-Phase 4 addresses critical gaps in data longevity and user experience. Currently, the system suffers from "amnesia" regarding user profiles and settings upon restart, and the Telegram bot menu has navigational dead-ends. This phase will implement **Multi-Entity Cloud Sync** (recovering not just expenses, but also profiles and settings from Google Sheets) and a **Unified Navigation System** for the bot.
+## Diagnosis: Why is "Something went wrong" still happening?
+The bot is receiving messages correctly via webhook, but the LLM parsing is failing. The Cloud Run and local logs show:
+```
+parse_expense: gemini-pro: NotFound - 404 models/gemini-pro is not found for API version v1...
+```
+**Root Cause Hypothesis:**
+1. We are using the `google-generativeai` package (which is now officially deprecated by Google).
+2. We are asking for `gemini-2.5-flash` or `gemini-1.5-flash`. The old SDK uses the older `v1` API endpoint, which no longer recognizes these models in the same way, or defaults to `gemini-pro` (which was sunset/removed), causing a hard 404 crash.
+3. The LLM parsing fails, and the fallback regex logic is either skipped or failing because of the exception handling.
 
----
-
-## 🎯 Core Objectives
-
-### 1. Unified Cloud-Local Persistence (Anti-Amnesia)
-Ensure that *every* user-specific data point survives a server restart or container wipe.
-- **Entity Expansion:** Extend `sheets_etl.py` and `database.py` to synchronize three core entities:
-    - **Expenses:** (Existing) Historical transaction data.
-    - **Profiles:** User age, income, currency, and language preferences.
-    - **Settings:** Web dashboard layout, theme, and financial goals.
-- **Cold-Start Recovery 2.0:** On startup, the system must detect missing data in all three tables and pull the latest "truth" from the corresponding Google Sheets worksheets.
-- **Reliability:** Implement mandatory `sync_from_sheets` inside the FastAPI `lifespan` event to ensure the bot is never "blind" to old data on boot.
-
-### 2. High-Fidelity Navigation (The Loop)
-Eliminate navigational friction in the Telegram Bot by ensuring every action has a clear path back to the dashboard.
-- **Menu Accessibility:** 
-    - Add a "🌐 Web Dashboard" button to the `settings_tools` menu.
-    - Ensure the "Back to Menu" button is present on *all* secondary views (Last Transactions, Category Charts, AI Insights).
-- **Persistent Header:** Ensure that after specific actions (like `/undo`), the bot re-presents the Main Menu to keep the user in the flow.
-
-### 3. Profile Integrity Audit
-Perfect the capture and storage of user attributes.
-- **Auto-Sync on Update:** Any change to user profile (age, income) must trigger an immediate background sync to the "Profiles" worksheet in Google Sheets.
-- **Validation:** Enforce strict type checking to prevent corrupted state from breaking the AI engine.
+To fix this smartly, we will split the work into two independent branches so two agents can tackle it in parallel without stepping on each other's toes.
 
 ---
 
-## 🛠️ Execution Roadmap
+## Branch A: The Modernization Branch
+**Focus**: Upgrade the LLM engine to the official, supported Google GenAI SDK.
+**Assignee**: Agent 1 (Me)
 
-### Step 1: Multi-Sheet Support
-- [ ] Update `sheets_etl.py` to handle multiple worksheets: `Expenses`, `Profiles`, and `Settings`.
-- [ ] Implement `fetch_all_profiles()` and `fetch_all_settings()` in `sheets_etl.py`.
-- [ ] Implement `rewrite_profiles()` and `rewrite_settings()` for wholesale cloud updates.
-
-### Step 2: Persistence Overhaul
-- [ ] Refactor `database.py`'s `sync_from_sheets()` to iterate through all entities and restore them to SQLite.
-- [ ] Move the `sync_from_sheets()` trigger from `main.py`'s `if __name__ == "__main__"` to the `lifespan` startup event.
-- [ ] Ensure `set_profile` and `save_user_settings` trigger a Sheets sync.
-
-### Step 3: UX & Navigation
-- [ ] Add `[InlineKeyboardButton("⬅️ Back to Menu", callback_data='main_menu')]` to all relevant keyboard responses in `callbacks.py`.
-- [ ] Update `handlers/settings_ui.py` to include a "🌐 Open Dashboard" button.
-- [ ] Implement a `main_menu` callback handler to return to the root dashboard from any state.
+### Tasks:
+1. **Update Dependencies**:
+   - Remove `google-generativeai` from `requirements.txt`.
+   - Add the new official SDK: `google-genai>=0.3.0`.
+2. **Refactor `llm_helper.py`**:
+   - Rewrite the Gemini initialization to use `from google import genai` and `client = genai.Client(api_key=...)`.
+   - Update `parse_expense`, `translate`, and `generate_insights` to use the new `client.models.generate_content()` syntax.
+   - Ensure the model name is strictly `gemini-2.5-flash`.
+3. **Verify Locally**:
+   - Run the updated `llm_helper.py` script as `__main__` to ensure the new SDK correctly parses an expense without 404 errors.
 
 ---
 
-## ✅ Success Metrics
-1. **Zero Data Loss:** After a full server restart, `/menu` correctly displays the user's previously set age, income, AND historical expenses.
-2. **Infinite Loop:** A user can navigate from Menu -> Chart -> Menu -> Settings -> Dashboard without typing a single slash command.
-3. **Cloud Mirror:** The Google Sheet contains three worksheets (`Expenses`, `Profiles`, `Settings`) that perfectly reflect the local SQLite state.
-4. **Fast Startup:** The `lifespan` sync doesn't block API healthchecks but ensures data is ready before the first user response.
+## Branch B: The Resilience Branch
+**Focus**: Ensure the application never fully crashes even if the AI is completely offline or throwing 404/500 errors.
+**Assignee**: Agent 2 (The other agent)
+
+### Tasks:
+1. **Bulletproof Exception Handling in `callbacks.py / messages.py`**:
+   - Currently, if `parse_expense` fails completely or returns `None`, the whole bot throws an uncaught exception (`Something went wrong`). Ensure these are caught cleanly, informing the user "AI is currently unavailable, we saved your text, please edit manually."
+2. **Robustify the Regex Fallback**:
+   - In `llm_helper.py`, if the LLM crashes, the regex fallback currently runs. Verify that the regex fallback actually works and doesn't crash on its own logic (e.g., `text_lower` might be unbound if an exception jumps out early).
+3. **Graceful Degradation Tests**:
+   - Add a test in `test_suite.py` that explicitly removes the `GOOGLE_API_KEY` (or sets it to "INVALID") and verifies that the bot can STILL parse simple statements using ONLY the regex fallback.
+
+---
+
+## Workflow Instructions
+*   **Agent 1 (Current Agent)** will execute **Branch A**.
+*   Please provide this `mission.md` document to the **second agent** and instruct them to execute **Branch B**.
+*   Once both branches are complete, we will merge the code, run the full test suite, and deploy to Cloud Run.

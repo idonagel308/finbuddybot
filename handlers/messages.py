@@ -134,6 +134,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 response_text = "🔢 I see a number but couldn't figure out the category.\nTry: *\"Spent 50 on food\"*"
 
+        elif status == 'error':
+            response_text = "⚠️ *Service Unavailable*\nMy AI engine is currently offline. Please try again later or use the /menu dashboard."
+
         else:
             # not_expense — friendly guidance
             response_text = (
@@ -150,7 +153,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response_text = "⚠️ Invalid expense data. Please check the amount and try again."
     except Exception as e:
         logger.error(f"Unexpected error for user {user_id}: {type(e).__name__}: {e}")
-        response_text = "⚠️ Something went wrong. Please try again later."
+        response_text = "⚠️ *Service Unavailable*\nMy AI engine encountered a temporary error. Please try again later or use the /menu dashboard."
 
     # Delete the "Processing..." placeholder
     try:

@@ -397,6 +397,22 @@ def test_parse_expense_regex():
         llm_helper.api_key = original_key
 
 
+def test_graceful_degradation():
+    from unittest.mock import patch
+    _section("8.5. Graceful Degradation (Simulated AI Outage)")
+    
+    with patch('services.llm_helper.client.models.generate_content') as mock_generate:
+        mock_generate.side_effect = Exception("404 NotFound - Simulated AI Crash")
+        
+        try:
+            result = llm_helper.parse_expense("spent 50 on pizza")
+            _test("Graceful Degradation - Total AI Crash", 
+                  result.get('status') == 'success' and result.get('amount') == 50.0,
+                  "Regex fallback succeeded despite AI crash")
+        except Exception as e:
+            _test("Graceful Degradation - Total AI Crash", False, f"Crashed: {e}")
+
+
 # ══════════════════════════════════════════════════════════════
 # 9. MESSAGE SAFETY
 # ══════════════════════════════════════════════════════════════
@@ -634,6 +650,7 @@ if __name__ == "__main__":
     test_security()
     test_parse_expense_llm()
     test_parse_expense_regex()
+    test_graceful_degradation()
     test_message_safety()
     test_currency()
     test_insights()

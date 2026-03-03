@@ -1,6 +1,9 @@
 import asyncio
 import os
 import sys
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +36,7 @@ async def test_llm_parsing():
     assert res3.get('planned') is True
     assert res3.get('due_date') is not None
     
-    print("✅ LLM Parsing Tests Passed\n")
+    print("OK - LLM Parsing Tests Passed\n")
 
 
 async def test_analytics_and_db():
@@ -71,9 +74,9 @@ async def test_analytics_and_db():
     
     # Clean up
     await delete_all_expenses(test_user_id)
-    print("✅ Database & Analytics Tests Passed\n")
+    print("OK - Database & Analytics Tests Passed\n")
 
 if __name__ == "__main__":
     asyncio.run(test_llm_parsing())
     asyncio.run(test_analytics_and_db())
-    print("🎉 All Integration Tests Passed!")
+    print("All Integration Tests Passed!")
