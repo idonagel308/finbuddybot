@@ -180,6 +180,10 @@ async def telegram_webhook(token: str, request: Request, background_tasks: Backg
         logger.warning("Unauthorized webhook access attempt.")
         raise HTTPException(status_code=403, detail="Forbidden")
     
+    if telegram_app is None:
+        logger.warning("Webhook received but Application is not ready.")
+        return JSONResponse(status_code=503, content={"detail": "Service Unavailable - Bot starting up"})
+
     try:
         data = await request.json()
         update = Update.de_json(data, telegram_app.bot)

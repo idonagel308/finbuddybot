@@ -15,6 +15,7 @@ from handlers.onboarding import handle_onboard_budget_input
 from core.config import logger, MAX_MESSAGE_LENGTH
 from datetime import datetime
 import traceback
+from database.exceptions import ExpenseError, ProfileError
 
 
 @_private_only
@@ -152,6 +153,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError as e:
         logger.warning(f"Validation error for user {user_id}: {e}")
         response_text = "⚠️ Invalid expense data. Please check the amount and try again."
+    except (ExpenseError, ProfileError) as e:
+        logger.error(f"Database error for user {user_id}: {e}")
+        response_text = "⚠️ *Database Error*\nI'm having trouble connecting to the database. Please try again later."
     except Exception as e:
         logger.error(f"Unexpected error for user {user_id}: {type(e).__name__}: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
