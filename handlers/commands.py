@@ -9,26 +9,26 @@ from database.analytics_engine import export_expenses_csv
 from database.queries import get_monthly_summary
 from handlers.utils import _safe_send, _private_only, _get_cached_profile
 from handlers.onboarding import start_onboarding
+from services.localization import t
 
 
-def _get_main_menu_keyboard(is_business: bool = False) -> InlineKeyboardMarkup:
-    """Returns the primary dashboard inline keyboard."""
-    
-    # URL of your mounted FastAPI static webapp
+def _get_main_menu_keyboard(is_business: bool = False, language: str = "English") -> InlineKeyboardMarkup:
+    """Returns the primary dashboard inline keyboard with localized labels."""
     webapp_url = os.getenv("WEBAPP_URL", "http://localhost:8000/webapp")
-    
+
     keyboard = [
-        [InlineKeyboardButton("🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))],
-        [InlineKeyboardButton("📜 Last Transactions", callback_data='last_expenses'), InlineKeyboardButton("📅 Monthly / Yearly", callback_data='monthly_list')],
-        [InlineKeyboardButton("📊 Category Pie Chart", callback_data='pie_chart'), InlineKeyboardButton("💡 AI Context Insights", callback_data='insights')],
+        [InlineKeyboardButton(t('btn_open_dashboard', language), web_app=WebAppInfo(url=webapp_url))],
+        [InlineKeyboardButton(t('btn_last_transactions', language), callback_data='last_expenses'),
+         InlineKeyboardButton(t('btn_monthly_yearly', language), callback_data='monthly_list')],
+        [InlineKeyboardButton(t('btn_pie_chart', language), callback_data='pie_chart'),
+         InlineKeyboardButton(t('btn_ai_insights', language), callback_data='insights')],
     ]
 
-    # Business-specific features
     if is_business:
-        keyboard.append([InlineKeyboardButton("📅 Pending & Forecast", callback_data='pending_list')])
+        keyboard.append([InlineKeyboardButton(t('btn_pending_forecast', language), callback_data='pending_list')])
 
-    keyboard.append([InlineKeyboardButton("⚙️ Settings & Tools", callback_data='settings_tools')])
-    
+    keyboard.append([InlineKeyboardButton(t('btn_settings', language), callback_data='settings_tools')])
+
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -39,8 +39,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @_private_only
 async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Restarts the onboarding flow."""
-    await start_onboarding(update, context, is_restart=True)
+    """Sends a warning confirmation before restarting the onboarding flow and clearing all data."""
+    keyboard = [
+        [InlineKeyboardButton("⚠️ Yes, reset everything", callback_data='confirm_restart')],
+        [InlineKeyboardButton("❌ Cancel", callback_data='cancel_restart')],
+    ]
+    await _safe_send(
+        context.bot,
+        update.effective_chat.id,
+        "⚠️ *Are you sure you want to restart?*\n\n"
+        "This will *permanently delete all your expenses, profile, and budget data* and restart the setup from scratch.\n\n"
+        "_This action cannot be undone._",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
 
 
 @_private_only
@@ -48,12 +61,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /help command."""
     profile = await _get_cached_profile(update.effective_user.id)
     is_business = (profile.get('account_type') == 'business') if profile else False
-    
-    await _safe_send(context.bot, update.effective_chat.id, 
-        "🤖 *FinTechBot Protocol:*\n\n"
-        "To log an expense, simply type it out. E.g., _\"Flight to London 450 EUR\"_.\n\n"
-        "You can manage your analytics and settings using the Main Dashboard below:",
-        reply_markup=_get_main_menu_keyboard(is_business=is_business),
+    lang = (profile.get('language') or 'English') if profile else 'English'
+
+    await _safe_send(
+        context.bot, update.effective_chat.id,
+        t('help_text', lang),
+        reply_markup=_get_main_menu_keyboard(is_business=is_business, language=lang),
         parse_mode='Markdown'
     )
 
@@ -65,7 +78,13 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     profile = await _get_cached_profile(update.effective_user.id)
     is_business = (profile.get('account_type') == 'business') if profile else False
-    await _safe_send(context.bot, update.effective_chat.id, '📊 *My Finances Dashboard:*', reply_markup=_get_main_menu_keyboard(is_business=is_business), parse_mode='Markdown')
+    lang = (profile.get('language') or 'English') if profile else 'English'
+    await _safe_send(
+        context.bot, update.effective_chat.id,
+        t('menu_text', lang),
+        reply_markup=_get_main_menu_keyboard(is_business=is_business, language=lang),
+        parse_mode='Markdown'
+    )
 
 
 @_private_only

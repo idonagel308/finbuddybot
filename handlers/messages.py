@@ -16,6 +16,7 @@ from core.config import logger, MAX_MESSAGE_LENGTH
 from datetime import datetime
 import traceback
 from database.exceptions import ExpenseError, ProfileError
+from services.localization import t
 
 
 @_private_only
@@ -74,15 +75,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 tx_status = 'planned' if planned else 'completed'
                 await add_expense(user_id, amount, category, description, status=tx_status, due_date=due_date)
 
+                # Get user's language for localized response
+                _profile = await get_profile(user_id)
+                lang = (_profile.get('language') or 'English') if _profile else 'English'
+
                 safe_desc = _escape_markdown(description)
                 is_income = expense_data.get('type') == 'income'
                 type_icon = "🟢" if is_income else "🔴"
+                saved_key = 'income_saved' if is_income else 'expense_saved'
                 word = "Income" if is_income else ("Planned Expense" if planned else "Expense")
 
                 msg_status = f"\n📆 Due: {due_date}" if planned and due_date else ""
-                
+
                 response_text = (
-                    f"✅ *{word} Saved!*\n\n"
+                    f"{t(saved_key, lang)}\n\n"
                     f"💰 Amount: {type_icon} *₪{amount:.2f}*\n"
                     f"📂 Category: {_display_category(category)}\n"
                     f"📝 Details: _{safe_desc}_{msg_status}\n"
@@ -141,14 +147,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         else:
             # not_expense — friendly guidance
-            response_text = (
-                "👋 Hey! I'm your expense tracker bot.\n"
-                "Send me what you spent, like:\n"
-                "• *\"Spent 50 on food\"*\n"
-                "• *\"taxi 35\"*\n"
-                "• *\"קניתי פיצה ב-30\"*\n\n"
-                "Or use /menu for your dashboard."
-            )
+            _profile = await get_profile(user_id)
+            lang = (_profile.get('language') or 'English') if _profile else 'English'
+            response_text = t('not_expense_hint', lang)
 
     except ValueError as e:
         logger.warning(f"Validation error for user {user_id}: {e}")
