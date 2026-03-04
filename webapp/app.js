@@ -11,34 +11,18 @@ let categoryChartInstance = null;
 const getTg = () => (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 
 const defaultData = {
-    user: { name: 'Ido' },
-    budget: { total: 5000, spent: 3450, savings: 0 },
-    netFlow: { income: 8200, expenses: 3450 },
+    user: { name: '' },
+    budget: { total: 0, spent: 0, savings: 0 },
+    netFlow: { income: 0, expenses: 0 },
     cashFlowSeries: {
-        labels: ['1st', '5th', '10th', '15th', '20th', '25th', '30th'],
-        income: [0, 8200, 8200, 8200, 8200, 8200, 8200],
-        expenses: [120, 850, 1400, 1950, 2400, 3100, 3450]
+        labels: [],
+        income: [],
+        expenses: []
     },
-    categories: {
-        'Housing': 1500,
-        'Food': 850,
-        'Transport': 400,
-        'Shopping': 450,
-        'Entertainment': 250
-    },
-    goal: { name: 'Vacation', target: 10000, current: 6500 },
-    transactions: [
-        { id: 1, title: 'Salary', category: 'Income', amount: 8200, type: 'inc', time: '2 days ago', icon: '💼' },
-        { id: 2, title: 'Uber', category: 'Transport', amount: 45, type: 'exp', time: '5 hours ago', icon: '🚗' },
-        { id: 3, title: 'Supermarket', category: 'Food', amount: 320, type: 'exp', time: '1 day ago', icon: '🍔' },
-        { id: 4, title: 'Netflix', category: 'Entertainment', amount: 40, type: 'exp', time: '2 days ago', icon: '🎉' },
-        { id: 5, title: 'Rent', category: 'Housing', amount: 1500, type: 'exp', time: '3 days ago', icon: '🏠' }
-    ],
-    insight: `
-        <p><strong>🔍 Observation:</strong> Your income arrived on the 5th, safely padding your account early. However, Food and Shopping are consuming 37% of your budget mid-month.</p>
-        <p><strong>💡 Strategy:</strong> Implementing the 'pay-yourself-first' rule—moving 20% of income directly to investments before expenses hit—creates artificial scarcity, capping discretionary spread.</p>
-        <p><strong>🎯 Action:</strong> Consider setting a strict ₪200 weekly limit for dining out starting next Sunday.</p>
-    `
+    categories: {},
+    goal: { name: 'New Goal', target: 10000, current: 0 },
+    transactions: [],
+    insight: `<p>No AI insights yet. Log some expenses in the Telegram bot first, then tap <strong>AI Context Insights</strong> to generate your analysis.</p>`
 };
 
 let currentPeriodData = JSON.parse(JSON.stringify(defaultData));
@@ -146,7 +130,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function updateGreeting() {
     const isHe = document.getElementById('lang-select').value === 'he';
-    const name = currentPeriodData.user?.name || (isHe ? 'עידו' : 'Ido');
+    const name = currentPeriodData.user?.name || '';
 
     document.querySelector('.greeting h1').innerHTML = isHe
         ? `שלום, ${name} 👋`
@@ -203,7 +187,7 @@ async function initDashboard(year = null, month = null) {
 
     } catch (e) {
         console.error("Dashboard Load Error:", e);
-        // Fallback to default copy if entire fetch fails
+        // Show empty state — never show fake demo data
         currentPeriodData = JSON.parse(JSON.stringify(defaultData));
         updateHeaderUI();
         updateBudgetUI();
@@ -213,7 +197,7 @@ async function initDashboard(year = null, month = null) {
         renderCategoryChart();
 
         const insightEl = document.getElementById('ai-insight');
-        insightEl.innerHTML = currentPeriodData.insight;
+        insightEl.innerHTML = `<p>⚠️ Could not load dashboard data. Please try again later, or make sure you are opening this via the Telegram bot.</p>`;
         insightEl.classList.remove('skeleton-line', 'short');
     }
 }

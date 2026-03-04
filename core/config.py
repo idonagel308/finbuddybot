@@ -51,6 +51,9 @@ VALID_CALLBACKS = {
     'settings_set_lang', 'settings_set_currency', 'settings_set_budget',
     'settings_set_age', 'settings_set_income', 'settings_set_goals',
     'settings_edit_lang_custom', 'settings_edit_currency_custom',
+    'settings_toggle_account',
+    # Restart confirmations
+    'confirm_restart', 'cancel_restart',
 }
 
 # ── Emoji Display Mapping ──

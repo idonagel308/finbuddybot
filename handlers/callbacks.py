@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from database.expense_operations import add_expense, delete_expense, delete_all_expenses, delete_monthly_expenses, get_last_expense_id
-from database.user_management import get_profile, set_profile, get_budget, set_budget, get_user_settings, save_user_settings
+from database.user_management import get_profile, set_profile, get_budget, set_budget, get_user_settings, save_user_settings, reset_user_data
 from database.queries import get_monthly_summary, get_recent_expenses, get_monthly_expenses, get_pending_payments
 from database.analytics_engine import get_daily_aggregation, get_category_totals, get_expense_totals, get_yearly_month_totals, export_expenses_csv, save_insight
 import services.llm_helper as llm_helper
@@ -107,6 +107,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == 'cancel_delete_monthly':
         await query.edit_message_text(text="✅ Cancelled. Your monthly expenses are safe.")
+        return
+
+    if data == 'confirm_restart':
+        await query.edit_message_text(text="⏳ Resetting your account... please wait.")
+        try:
+            await delete_all_expenses(telegram_id)
+            await reset_user_data(telegram_id)
+            _invalidate_profile_cache(telegram_id)
+        except Exception as e:
+            logger.error(f"Error resetting data for user {telegram_id}: {e}")
+        # Start fresh onboarding
+        from handlers.onboarding import start_onboarding
+        # Simulate a fresh /start context using the query's message
+        await query.edit_message_text(
+            text="✅ *All data deleted.* Starting fresh setup...",
+            parse_mode='Markdown'
+        )
+        await start_onboarding(update, context, is_restart=True)
+        return
+
+    if data == 'cancel_restart':
+        await query.edit_message_text(text="✅ Cancelled. Your data is safe.")
         return
 
     # ── Prefix-Based Dynamic Callbacks ──

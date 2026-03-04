@@ -118,3 +118,18 @@ async def get_user_settings(user_id: int) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error fetching settings for user {user_id}: {e}")
         return {}
+
+async def reset_user_data(user_id: int) -> bool:
+    """Deletes ALL data for a user (profile, budget, settings).
+    Expenses are stored in a sub-collection and must be deleted separately.
+    Returns True on success, False on failure.
+    """
+    user_id_str = str(user_id)
+    user_ref = db.collection("users").document(user_id_str)
+    try:
+        await user_ref.delete()
+        logger.info(f"Deleted full user document for user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error resetting data for user {user_id}: {e}")
+        return False
