@@ -65,7 +65,8 @@ async def get_budget(user_id: int) -> Optional[float]:
     """Retrieves budget from Firestore."""
     user_id_str = str(user_id)
     try:
-            doc = await user_ref.get()
+        user_ref = db.collection("users").document(user_id_str)
+        doc = await user_ref.get()
         if doc.exists:
             data = doc.to_dict()
             budget = data.get("budget")
@@ -107,7 +108,8 @@ async def get_user_settings(user_id: int) -> Dict[str, Any]:
     """Retrieves user settings from Firestore."""
     user_id_str = str(user_id)
     try:
-            doc = await user_ref.get()
+        user_ref = db.collection("users").document(user_id_str)
+        doc = await user_ref.get()
         if doc.exists:
             data = doc.to_dict()
             return data.get("settings", {})
