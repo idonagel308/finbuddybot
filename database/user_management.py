@@ -31,7 +31,8 @@ async def get_profile(user_id: int) -> Optional[Dict[str, Any]]:
     """Retrieves profile from Firestore."""
     user_id_str = str(user_id)
     try:
-            doc = await user_ref.get()
+        user_ref = db.collection("users").document(user_id_str)
+        doc = await user_ref.get()
         if doc.exists:
             data = doc.to_dict()
             return data.get("profile")
