@@ -73,7 +73,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if amount and category:
                 tx_status = 'planned' if planned else 'completed'
-                await add_expense(user_id, amount, category, description, status=tx_status, due_date=due_date)
+                await add_expense(
+                    user_id, 
+                    amount, 
+                    category, 
+                    description, 
+                    transaction_type=expense_data.get('type', 'expense'), 
+                    status=tx_status, 
+                    due_date=due_date
+                )
 
                 # Get user's language for localized response
                 _profile = await get_profile(user_id)
@@ -160,7 +168,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Unexpected error for user {user_id}: {type(e).__name__}: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
-        response_text = "⚠️ *Service Unavailable*\nMy AI engine encountered a temporary error. Please try again later or use the /menu dashboard."
+        
+        # In case a DB exception leaked through that wasn't wrapped in ProfileError/ExpenseError
+        if "DefaultCredentialsError" in str(type(e).__name__) or "GoogleAPI" in str(type(e).__name__):
+            response_text = "⚠️ *Database Connection Error*\nThe server lost access to the database credentials. Please check Cloud Run Service Account permissions."
+        else:
+            response_text = "⚠️ *Service Unavailable*\nMy AI engine encountered a temporary error. Please try again later or use the /menu dashboard."
 
     # Delete the "Processing..." placeholder
     try:

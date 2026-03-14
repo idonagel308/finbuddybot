@@ -31,9 +31,8 @@ async def get_yearly_month_totals(user_id: int, year: Optional[int] = None) -> D
     end_iso = datetime(year + 1, 1, 1).isoformat()
     
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
-    
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         query = expenses_ref.where("date", ">=", start_iso).where("date", "<", end_iso)
         docs = query.stream()
         

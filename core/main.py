@@ -48,12 +48,15 @@ async def lifespan(app: FastAPI):
     async def _start_bot():
         global telegram_app
         try:
-            telegram_app = get_application()
-            if not telegram_app:
+            app_instance = get_application()
+            if not app_instance:
                 return
 
-            await telegram_app.initialize()
-            await telegram_app.start()
+            await app_instance.initialize()
+            await app_instance.start()
+            
+            # Safe to expose globally now that initialize() is done
+            telegram_app = app_instance
 
             bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
             
@@ -369,12 +372,23 @@ async def webapp_dashboard(
             "icon": icon
         })
 
-    # 3. Dynamic Goal Data (Mocked persistence for Phase 2, usually stored in DB)
-    goal_data = {
-        "name": "New Goal",
-        "target": 10000,
-        "current": current_savings
-    }
+    # 3. Dynamic Goal Data
+    import json
+    goal_db = profile.get("financial_goal")
+    if isinstance(goal_db, str):
+        try:
+            goal_db = json.loads(goal_db)
+        except:
+            goal_db = None
+            
+    if goal_db and isinstance(goal_db, dict):
+        goal_data = {
+            "name": goal_db.get("name", "My Goal"),
+            "target": float(goal_db.get("target", 10000)),
+            "current": current_savings
+        }
+    else:
+        goal_data = None  # Frontend should show empty state
         
     # 4. Sync AI Insight from Bot
     # Use the requested year/month or the current one

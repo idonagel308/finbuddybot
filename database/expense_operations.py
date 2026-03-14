@@ -15,8 +15,6 @@ async def add_expense(user_id: int, amount: float, category: str, description: s
         transaction_type = "income"
 
     user_id_str = str(user_id)
-    doc_ref = db.collection("users").document(user_id_str).collection("expenses").document()
-    
     data = {
         "amount": amount,
         "category": category,
@@ -29,6 +27,7 @@ async def add_expense(user_id: int, amount: float, category: str, description: s
     }
     
     try:
+        doc_ref = db.collection("users").document(user_id_str).collection("expenses").document()
         await doc_ref.set(data)
         logger.info(f"Added {transaction_type} to Firestore for user {user_id}")
         
@@ -41,8 +40,8 @@ async def add_expense(user_id: int, amount: float, category: str, description: s
 async def delete_expense(user_id: int, expense_id: str) -> bool:
     """Deletes a specific expense by ID."""
     user_id_str = str(user_id)
-    doc_ref = db.collection("users").document(user_id_str).collection("expenses").document(str(expense_id))
     try:
+        doc_ref = db.collection("users").document(user_id_str).collection("expenses").document(str(expense_id))
         await doc_ref.delete()
         return True
     except Exception as e:
@@ -52,8 +51,8 @@ async def delete_expense(user_id: int, expense_id: str) -> bool:
 async def delete_all_expenses(user_id: int) -> int:
     """Deletes all expenses for a user and returns the count."""
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         docs = expenses_ref.stream()
         count = 0
         async for doc in docs:
@@ -80,8 +79,8 @@ async def delete_monthly_expenses(user_id: int, year: Optional[int] = None, mont
     end_iso = end_date.isoformat()
 
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         query = expenses_ref.where("date", ">=", start_iso).where("date", "<", end_iso)
         docs = query.stream()
         count = 0

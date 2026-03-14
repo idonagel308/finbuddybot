@@ -94,7 +94,7 @@
             <!-- Widget 2: Budget Space -->
             <div class="card glass widget-budget" data-widget-id="budget">
                 <div class="card-header">
-                    <h2>Monthly Control</h2>
+                    <h2 id="budget-title">Monthly Control</h2>
                     <span id="budget-percent" class="tag">0%</span>
                 </div>
 
@@ -111,7 +111,7 @@
                         <div class="progress-fill" id="budget-fill"></div>
                     </div>
 
-                    <div class="savings-display">
+                    <div class="savings-display" id="personal-savings-display">
                         <span class="label">🏦 Saved this month:</span>
                         <span id="savings-amount" class="amount">₪0</span>
                     </div>
@@ -188,6 +188,12 @@
                         <p>Saved: <strong id="goal-saved">₪0</strong> / <span id="goal-target-display">₪10,000</span>
                         </p>
                     </div>
+                </div>
+
+                <!-- Empty Goal State -->
+                <div id="goal-empty-state" style="display:none; text-align:center; padding: 20px 0;">
+                    <p style="margin-bottom:15px; color:#94a3b8;">No goal set yet.</p>
+                    <button class="action-btn" id="create-goal-btn" style="width:100%;">Create First Goal</button>
                 </div>
             </div>
 

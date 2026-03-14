@@ -6,7 +6,6 @@ from database.exceptions import ProfileError
 async def set_profile(user_id: int, age: int, yearly_income: float, currency: str = 'NIS', language: str = 'English', additional_info: str = "", account_type: str = "personal") -> None:
     """Sets/updates profile in Firestore."""
     user_id_str = str(user_id)
-    user_ref = db.collection("users").document(user_id_str)
     
     data = {
         "profile": {
@@ -21,6 +20,7 @@ async def set_profile(user_id: int, age: int, yearly_income: float, currency: st
     }
     
     try:
+        user_ref = db.collection("users").document(user_id_str)
         await user_ref.set(data, merge=True)
         logger.info(f"Updated profile for user {user_id} in Firestore")
     except Exception as e:
@@ -30,10 +30,8 @@ async def set_profile(user_id: int, age: int, yearly_income: float, currency: st
 async def get_profile(user_id: int) -> Optional[Dict[str, Any]]:
     """Retrieves profile from Firestore."""
     user_id_str = str(user_id)
-    user_ref = db.collection("users").document(user_id_str)
-    
     try:
-        doc = await user_ref.get()
+            doc = await user_ref.get()
         if doc.exists:
             data = doc.to_dict()
             return data.get("profile")
@@ -55,6 +53,7 @@ async def set_budget(user_id: int, amount: float) -> None:
     }
     
     try:
+        user_ref = db.collection("users").document(user_id_str)
         await user_ref.set(data, merge=True)
         logger.info(f"Updated budget for user {user_id} in Firestore")
     except Exception as e:
@@ -64,10 +63,8 @@ async def set_budget(user_id: int, amount: float) -> None:
 async def get_budget(user_id: int) -> Optional[float]:
     """Retrieves budget from Firestore."""
     user_id_str = str(user_id)
-    user_ref = db.collection("users").document(user_id_str)
-    
     try:
-        doc = await user_ref.get()
+            doc = await user_ref.get()
         if doc.exists:
             data = doc.to_dict()
             budget = data.get("budget")
@@ -98,6 +95,7 @@ async def save_user_settings(user_id: int, theme: Optional[str] = None, layout: 
     data = {"settings": filtered_settings}
     
     try:
+        user_ref = db.collection("users").document(user_id_str)
         await user_ref.set(data, merge=True)
         logger.info(f"Updated settings for user {user_id} in Firestore")
     except Exception as e:
@@ -107,10 +105,8 @@ async def save_user_settings(user_id: int, theme: Optional[str] = None, layout: 
 async def get_user_settings(user_id: int) -> Dict[str, Any]:
     """Retrieves user settings from Firestore."""
     user_id_str = str(user_id)
-    user_ref = db.collection("users").document(user_id_str)
-    
     try:
-        doc = await user_ref.get()
+            doc = await user_ref.get()
         if doc.exists:
             data = doc.to_dict()
             return data.get("settings", {})
@@ -125,8 +121,9 @@ async def reset_user_data(user_id: int) -> bool:
     Returns True on success, False on failure.
     """
     user_id_str = str(user_id)
-    user_ref = db.collection("users").document(user_id_str)
     try:
+        user_ref = db.collection("users").document(user_id_str)
+        user_ref = db.collection("users").document(user_id_str)
         await user_ref.delete()
         logger.info(f"Deleted full user document for user {user_id}")
         return True

@@ -22,9 +22,8 @@ async def get_monthly_summary(user_id: int, year: Optional[int] = None, month: O
     end_iso = end_date.isoformat()
 
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
-    
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         query = expenses_ref.where("date", ">=", start_iso).where("date", "<", end_iso)
         docs = query.stream()
         
@@ -49,9 +48,8 @@ async def get_monthly_summary(user_id: int, year: Optional[int] = None, month: O
 async def get_recent_expenses(user_id: int, limit: int = 5) -> List[Tuple]:
     """Retrieves most recent expenses from Firestore."""
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
-    
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         query = expenses_ref.order_by("date", direction=firestore.Query.DESCENDING).limit(limit)
         docs = query.stream()
         
@@ -87,9 +85,8 @@ async def get_monthly_expenses(user_id: int, year: Optional[int] = None, month: 
     end_iso = end_date.isoformat()
 
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
-    
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         query = expenses_ref.where("date", ">=", start_iso).where("date", "<", end_iso).order_by("date", direction=firestore.Query.DESCENDING)
         docs = query.stream()
         
@@ -111,9 +108,8 @@ async def get_monthly_expenses(user_id: int, year: Optional[int] = None, month: 
 async def get_pending_payments(user_id: int) -> List[Tuple]:
     """Retrieves all planned/pending payments from Firestore."""
     user_id_str = str(user_id)
-    expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
-    
     try:
+        expenses_ref = db.collection("users").document(user_id_str).collection("expenses")
         # Query for status == "planned"
         query = expenses_ref.where("status", "==", "planned").order_by("date", direction=firestore.Query.DESCENDING)
         docs = query.stream()

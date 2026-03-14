@@ -20,7 +20,7 @@ const defaultData = {
         expenses: []
     },
     categories: {},
-    goal: { name: 'New Goal', target: 10000, current: 0 },
+    goal: null,
     transactions: [],
     insight: `<p>No AI insights yet. Log some expenses in the Telegram bot first, then tap <strong>AI Context Insights</strong> to generate your analysis.</p>`
 };
@@ -39,6 +39,13 @@ function updateBudgetUI() {
     pctTag.textContent = `${Math.round(budgetPct)}%`;
     if (budgetPct > 80) pctTag.classList.add('danger');
     else pctTag.classList.remove('danger');
+
+    const isBiz = currentPeriodData.budget.is_business;
+    const titleEl = document.getElementById('budget-title');
+    if (titleEl) titleEl.textContent = isBiz ? 'Business Cash Flow' : 'Monthly Control';
+    
+    const personalSavingsDisplay = document.getElementById('personal-savings-display');
+    if (personalSavingsDisplay) personalSavingsDisplay.style.display = isBiz ? 'none' : 'flex';
 
     const fill = document.getElementById('budget-fill');
     fill.style.width = `${Math.min(100, budgetPct)}%`;
@@ -64,6 +71,18 @@ function updateHeaderUI() {
 }
 
 function updateGoalUI() {
+    const goalSection = document.getElementById('goal-display-section');
+    const emptyState = document.getElementById('goal-empty-state');
+    
+    if (!currentPeriodData.goal || !currentPeriodData.goal.target) {
+        if (goalSection) goalSection.style.display = 'none';
+        if (emptyState) emptyState.style.display = 'block';
+        return;
+    }
+    
+    if (goalSection) goalSection.style.display = 'block';
+    if (emptyState) emptyState.style.display = 'none';
+
     const pct = Math.min(100, (currentPeriodData.goal.current / currentPeriodData.goal.target) * 100);
     document.getElementById('goal-pct').textContent = `${Math.round(pct)}%`;
     document.getElementById('goal-saved').textContent = `₪${currentPeriodData.goal.current.toLocaleString()}`;
@@ -449,9 +468,26 @@ const saveGoalBtn = document.getElementById('save-goal-btn');
 editGoalBtn.addEventListener('click', () => {
     goalDisplaySection.style.display = 'none';
     goalEditForm.style.display = 'block';
-    document.getElementById('goal-name-input').value = currentPeriodData.goal.name;
-    document.getElementById('goal-target-input').value = currentPeriodData.goal.target;
+    if (currentPeriodData.goal) {
+        document.getElementById('goal-name-input').value = currentPeriodData.goal.name || '';
+        document.getElementById('goal-target-input').value = currentPeriodData.goal.target || '';
+    }
 });
+
+const createGoalBtn = document.getElementById('create-goal-btn');
+if (createGoalBtn) {
+    createGoalBtn.addEventListener('click', () => {
+        document.getElementById('goal-empty-state').style.display = 'none';
+        goalEditForm.style.display = 'block';
+        document.getElementById('goal-name-input').value = 'New Goal';
+        document.getElementById('goal-target-input').value = 10000;
+        currentPeriodData.goal = { 
+            name: 'New Goal', 
+            target: 10000, 
+            current: Math.max(0, currentPeriodData.netFlow.income - currentPeriodData.netFlow.expenses) 
+        };
+    });
+}
 
 saveGoalBtn.addEventListener('click', () => {
     const newName = document.getElementById('goal-name-input').value || 'My Goal';
@@ -585,15 +621,13 @@ async function loadPreferences() {
         }
 
         // Apply Goal & Budget
-        const goalData = prefs.financial_goal || prefs.userGoal;
+        const goalData = prefs.financial_goal;
         if (goalData) {
             const goal = typeof goalData === 'string' ? JSON.parse(goalData) : goalData;
-            mockData.goal = goal;
             currentPeriodData.goal = goal;
         }
-        const budget = prefs.budget_target || prefs.userBudget;
+        const budget = prefs.budget_target;
         if (budget) {
-            currentPeriodData.budget.total = budget;
             currentPeriodData.budget.total = budget;
         }
 
