@@ -102,7 +102,7 @@ async def handle_onboard_budget_input(update: Update, context: ContextTypes.DEFA
         reply_keyboard = ReplyKeyboardMarkup(
             [[KeyboardButton(text="🌐 Open Web Dashboard", web_app=WebAppInfo(url=webapp_url))]],
             resize_keyboard=True,
-            persistent=True
+            is_persistent=True
         )
 
         await _safe_send(context.bot, chat_id, t("web_dashboard_added", lang), reply_markup=reply_keyboard)
