@@ -6,6 +6,7 @@ Chart.defaults.plugins.tooltip.padding = 12;
 
 let pulseChartInstance = null;
 let categoryChartInstance = null;
+let calendarSelectedDate = null;
 
 // ---------- Global State & Helpers ---------- //
 const getTg = () => (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
@@ -103,12 +104,21 @@ function updateTransactionsUI() {
     const listEl = document.getElementById('transaction-list');
     listEl.innerHTML = '';
 
-    if (!currentPeriodData.transactions || currentPeriodData.transactions.length === 0) {
-        listEl.innerHTML = '<div class="tx-empty">No transactions found for this period.</div>';
+    let txs = currentPeriodData.transactions || [];
+    if (calendarSelectedDate) {
+        txs = txs.filter(tx => tx.time === calendarSelectedDate);
+    }
+
+    if (txs.length === 0) {
+        if (calendarSelectedDate) {
+            listEl.innerHTML = '<div class="tx-empty">No transactions on this date.</div>';
+        } else {
+            listEl.innerHTML = '<div class="tx-empty">No transactions found for this period.</div>';
+        }
         return;
     }
 
-    currentPeriodData.transactions.forEach(tx => {
+    txs.forEach(tx => {
         const sign = tx.type === 'inc' ? '+' : '-';
         const html = `
             <div class="tx-item">
@@ -199,6 +209,7 @@ async function initDashboard(year = null, month = null) {
         updateTransactionsUI();
         renderPulseChart();
         renderCategoryChart();
+        renderCalendar();
 
         const insightEl = document.getElementById('ai-insight');
         insightEl.innerHTML = dashData.insight || "<p>No insights for this period.</p>";
@@ -214,6 +225,7 @@ async function initDashboard(year = null, month = null) {
         updateTransactionsUI();
         renderPulseChart();
         renderCategoryChart();
+        renderCalendar();
 
         const insightEl = document.getElementById('ai-insight');
         insightEl.innerHTML = `<p>⚠️ Could not load dashboard data. Please try again later, or make sure you are opening this via the Telegram bot.</p>`;
@@ -407,6 +419,116 @@ const renderCategoryChart = () => {
     });
 };
 renderCategoryChart();
+
+// 6. Calendar View
+const renderCalendar = () => {
+    const gridEl = document.getElementById('calendar-grid');
+    if (!gridEl) return;
+    
+    // Yearly view -> hide calendar
+    if (document.getElementById('view-type').value === 'yearly') {
+        gridEl.innerHTML = '<div style="grid-column: span 7; text-align: center; padding: 20px; color: var(--text-secondary);">Calendar view is only available for Monthly mode.</div>';
+        return;
+    }
+
+    const year = parseInt(document.getElementById('year-select').value);
+    const month = parseInt(document.getElementById('month-select').value);
+    
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const firstDay = new Date(year, month, 1).getDay(); // 0(Sun) - 6(Sat)
+    
+    // Map spending per day from cashFlowSeries
+    const spendMap = {};
+    const lbs = currentPeriodData.cashFlowSeries?.labels || [];
+    const exps = currentPeriodData.cashFlowSeries?.expenses || [];
+    
+    lbs.forEach((label, idx) => {
+        // label is 'MM-DD', e.g. '03-01'
+        const parts = label.split('-');
+        if (parts.length >= 2) {
+            const dayNum = parseInt(parts[1], 10);
+            spendMap[dayNum] = exps[idx];
+        }
+    });
+
+    // Calculate max spend for heatmap bins
+    let maxSpend = 0;
+    Object.values(spendMap).forEach(v => { if (v > maxSpend) maxSpend = v; });
+    
+    gridEl.innerHTML = '';
+    
+    // Headers
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    days.forEach(d => {
+        gridEl.insertAdjacentHTML('beforeend', `<div class="cal-header">${d}</div>`);
+    });
+    
+    // Empty prefix cells
+    for(let i=0; i<firstDay; i++) {
+        gridEl.insertAdjacentHTML('beforeend', `<div class="cal-day empty"></div>`);
+    }
+    
+    // Day cells
+    for(let day = 1; day <= daysInMonth; day++) {
+        const spend = spendMap[day] || 0;
+        let heatClass = 'heat-0';
+        if (spend > 0) {
+            if (maxSpend > 0) {
+                const ratio = spend / maxSpend;
+                if (ratio > 0.66) heatClass = 'heat-3';
+                else if (ratio > 0.33) heatClass = 'heat-2';
+                else heatClass = 'heat-1';
+            } else {
+                heatClass = 'heat-1';
+            }
+        }
+        
+        // Match JS Date to YYYY-MM-DD for filter matching
+        const fMonth = String(month + 1).padStart(2, '0');
+        const fDay = String(day).padStart(2, '0');
+        const dateStr = `${year}-${fMonth}-${fDay}`;
+        
+        const isSelected = calendarSelectedDate === dateStr ? 'selected' : '';
+        
+        const html = `
+            <div class="cal-day ${heatClass} ${isSelected}" data-date="${dateStr}">
+                <span class="day-num">${day}</span>
+                ${spend > 0 ? `<span class="day-amt">₪${spend.toLocaleString()}</span>` : ''}
+            </div>
+        `;
+        gridEl.insertAdjacentHTML('beforeend', html);
+    }
+    
+    // Click events
+    const dayCells = gridEl.querySelectorAll('.cal-day:not(.empty)');
+    dayCells.forEach(cell => {
+        cell.addEventListener('click', (e) => {
+            const clickedDate = e.currentTarget.getAttribute('data-date');
+            if (calendarSelectedDate === clickedDate) {
+                // Toggle off
+                calendarSelectedDate = null;
+                e.currentTarget.classList.remove('selected');
+                document.getElementById('clear-cal-filter').style.display = 'none';
+            } else {
+                calendarSelectedDate = clickedDate;
+                dayCells.forEach(c => c.classList.remove('selected'));
+                e.currentTarget.classList.add('selected');
+                document.getElementById('clear-cal-filter').style.display = 'inline-flex';
+            }
+            updateTransactionsUI();
+        });
+    });
+};
+
+const clearFilterBtn = document.getElementById('clear-cal-filter');
+if (clearFilterBtn) {
+    clearFilterBtn.addEventListener('click', () => {
+        calendarSelectedDate = null;
+        document.getElementById('clear-cal-filter').style.display = 'none';
+        renderCalendar();
+        updateTransactionsUI();
+    });
+}
 
 // ---------- Interactive Listeners ---------- //
 

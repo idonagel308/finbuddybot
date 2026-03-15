@@ -13,6 +13,7 @@
         rel="stylesheet">
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <!-- Resolve local assets correctly whether served via FastAPI (/webapp) or directly -->
     <base href="/static/">
     <link rel="stylesheet" href="style.css">
@@ -207,10 +208,28 @@
                 </div>
             </div>
 
-            <!-- Widget 5: Recent Transactions -->
+            <!-- Widget 5: Calendar View -->
+            <div class="card glass widget-calendar span-2" data-widget-id="calendar">
+                <div class="card-header">
+                    <h2>🗓️ Spending Heatmap</h2>
+                    <div class="legend-mini">
+                        <span class="dot cal-none"></span> None
+                        <span class="dot cal-low"></span> Low
+                        <span class="dot cal-med"></span> Med
+                        <span class="dot cal-high"></span> High
+                    </div>
+                </div>
+                <!-- Container for the JS-rendered calendar grid -->
+                <div id="calendar-grid" class="calendar-grid">
+                    <!-- Injected via JS -->
+                </div>
+            </div>
+
+            <!-- Widget 6: Recent Transactions -->
             <div class="card glass widget-transactions span-2" data-widget-id="transactions">
                 <div class="card-header">
                     <h2>Recent Activity</h2>
+                    <button class="icon-btn xs-btn" id="clear-cal-filter" title="Clear Date Filter" style="display:none;font-size:0.8rem;">❌</button>
                 </div>
                 <div class="transaction-list" id="transaction-list">
                     <!-- Injected via JS -->
@@ -295,6 +314,10 @@
                             </li>
                             <li class="layout-item" data-id="categories" draggable="true">
                                 <span class="drag-handle">☰</span> Expense Breakdown
+                                <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
+                            </li>
+                            <li class="layout-item" data-id="calendar" draggable="true">
+                                <span class="drag-handle">☰</span> Spending Heatmap (Calendar)
                                 <button class="visibility-btn" aria-label="Toggle Visibility">👁️</button>
                             </li>
                             <li class="layout-item" data-id="transactions" draggable="true">
